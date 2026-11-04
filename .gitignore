@@ -1,0 +1,20 @@
+# 依赖 —— 用 npm install 还原
+node_modules/
+
+# 运行期产物
+*.log
+npm-debug.log*
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 本地覆盖配置（凭据只存浏览器内存，这里是兜底）
+.env
+.env.local
+
+# 注意：lib/client.js 是构建产物，但**故意提交**。
+# DSH 启动时直接按 exports["./client"] 加载这个文件，用 link: 安装的
+# 使用者不会去跑 npm run build，缺了它侧边栏标签页就注册不出来。

@@ -1,0 +1,11 @@
+# 统一用 LF 入库，避免 Windows / Linux 之间整文件 diff
+* text=auto eol=lf
+
+# 二进制不做行尾转换
+*.png binary
+*.jpg binary
+*.ico binary
+
+# 打包产物：保留在版本库里，但不参与 diff 与语言统计
+lib/client.js linguist-generated=true -diff
+package-lock.json linguist-generated=true -diff
