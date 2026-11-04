@@ -101,4 +101,33 @@ assert.match(forward, /远端地址|127\.0\.0\.1/, 'forward pane hints at the ta
 
 assert.equal(render('forward'), forward, 'rendering twice is deterministic')
 
-console.log('render: ok (four panes paint, empty states present, no DOM needed)')
+/* ── the native workspace (DSH's own right sidebar) ───────────────────── */
+/* This is the entry a profile without better-sidebar sees, so it has to paint
+   without any better-sidebar props at all: no `ctx.betterSidebar`, no `scope`,
+   and a seat that may or may not provide the tab hook. */
+
+const Workspace = exported.NATIVE?.RemoteWorkspace
+assert.equal(typeof Workspace, 'function', 'the native workspace must be exported')
+
+const bare = renderToString(React.createElement(Workspace, { ctx, sessionId: 'test-session' }))
+assert.match(bare, /rs-wtabs/, 'workspace renders its own tab strip')
+for (const label of ['文件', '终端', '同步', '转发']) {
+  assert.match(bare, new RegExp(label), `workspace offers the ${label} pane`)
+}
+assert.match(bare, /rs-root/, 'the active pane paints inside the workspace')
+assert.match(bare, /rs-wpane/, 'panes are mounted into the workspace body')
+
+const seated = renderToString(React.createElement(Workspace, {
+  ctx,
+  sessionId: 'test-session',
+  useTabInfo: () => ({ tab: { visible: false, navigation: { params: { hostId: 'host-1' } } } }),
+}))
+assert.match(seated, /rs-wtabs/, 'workspace paints with the seat hook present')
+
+/* ── the header opener ────────────────────────────────────────────────── */
+
+const opener = renderToString(React.createElement(exported.NATIVE.RemoteHeaderButton, { open: () => {} }))
+assert.match(opener, /rs-icon/, 'header opener uses the plugin icon button')
+assert.match(opener, /远程 SSH/, 'header opener is labelled')
+
+console.log('render: ok (four panes + native workspace paint, empty states present, no DOM needed)')

@@ -124,10 +124,14 @@
       const afterDispose = service.getTabs().length
       if (afterDispose !== 0) fail(`dispose left ${afterDispose} tabs behind`)
 
-      /* 5. without better-sidebar the client must stay silent, not crash */
+      /* 5. without better-sidebar the client must not touch that service at all;
+            its independent entry lives in DSH's own right sidebar and is covered
+            by test/native.mjs (this page has no slots/sidebarRight stubs). */
       const bare = makeCtx(undefined)
       exports.apply(bare)
-      if (bare.disposers.length !== 0) fail('nothing may be registered without the service')
+      if (bare.disposers.length !== 1) fail(`expected one effect scope for the native entry, got ${bare.disposers.length}`)
+      if (service.getTabs().length !== 4) fail('a bare context must not touch the better-sidebar service')
+      for (const dispose of bare.disposers) dispose()
 
       report({
         ok: true,
@@ -143,6 +147,7 @@
         bareDisposers: bare.disposers.length,
         styles: document.querySelectorAll('style').length,
         filesTabHasRoute: typeof filesTab === 'object',
+        hasNativeEntry: typeof exports.NATIVE === 'object' && typeof exports.NATIVE.RemoteWorkspace === 'function',
       })
     } catch (error) {
       report({ ok: false, error: String(error && error.stack ? error.stack : error) })
