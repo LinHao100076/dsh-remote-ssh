@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8" /><title>bundle-check</title></head>
+<body>
+<pre id="out">pending</pre>
+<script>
+  // Minimal stand-in for DSH's browser module table: capture the registration,
+  // then materialise the factory with a stub `require`. React is never rendered,
+  // only required — so the panes can be constructed but never driven.
+  const stub = new Proxy(function () {}, {
+    get: (target, key) => (key === 'createElement' || key === 'Fragment' ? () => null : stub),
+    apply: () => null,
+  })
+  const react = {
+    createElement: () => null,
+    Fragment: 'fragment',
+    useState: () => [undefined, () => {}],
+    useEffect: () => {},
+    useRef: () => ({ current: undefined }),
+    useCallback: (fn) => fn,
+    useMemo: (fn) => fn(),
+    useSyncExternalStore: () => undefined,
+  }
+  window.__ModuleLoader__ = {
+    load: (record) => { window.__record = record },
+  }
+  const report = (payload) => {
+    const out = document.getElementById('out')
+    out.textContent = JSON.stringify(payload)
+    out.dataset.status = payload.ok ? 'ok' : 'fail'
+  }
+</script>
+<script src="../lib/client.js"></script>
+<script>
+  (async () => {
+    try {
+      const record = window.__record
+      if (!record) throw new Error('bundle did not call __ModuleLoader__.load')
+      if (record.id !== 'dsh-remote-ssh') throw new Error(`unexpected id ${record.id}`)
+      const exports = record.factory((name) => {
+        if (name === 'react') return react
+        if (name === 'react-dom' || name === 'react-dom/client') return stub
+        throw new Error(`unexpected require: ${name}`)
+      })
+
+      /**
+       * A service that behaves like the real one: it stores descriptors keyed by
+       * id, THROWS on a duplicate (better-sidebar 0.28.0 does exactly this), and
+       * returns the disposer that `ctx.effect` will call.
+       */
+      const makeService = () => {
+        const tabs = new Map()
+        return {
+          tabs,
+          registerTab(descriptor) {
+            if (tabs.has(descriptor.id)) throw new Error(`tab type "${descriptor.id}" already registered`)
+            tabs.set(descriptor.id, descriptor)
+            return () => { if (tabs.get(descriptor.id) === descriptor) tabs.delete(descriptor.id) }
+          },
+          getTab: (id) => tabs.get(id),
+          getTabs: () => [...tabs.values()],
+          openTab: () => {},
+          hostRouteUrl: (path) => path,
+        }
+      }
+      const makeCtx = (service) => {
+        const disposers = []
+        return {
+          disposers,
+          betterSidebar: service,
+          get: (name) => (name === 'betterSidebar' ? service : undefined),
+          effect: (fn) => {
+            const dispose = fn()
+            if (typeof dispose === 'function') disposers.push(dispose)
+            return typeof dispose === 'function' ? dispose : () => {}
+          },
+          // Scoped injection: the callback fires only when the service exists.
+          inject: (deps, callback) => { if (service !== undefined) callback({ betterSidebar: service }) },
+        }
+      }
+
+      /* 1. mount with the service present */
+      const service = makeService()
+      const ctx = makeCtx(service)
+      exports.apply(ctx)
+
+      const ids = service.getTabs().map((tab) => tab.id).sort()
+      const orders = service.getTabs().map((tab) => tab.order).sort((a, b) => a - b)
+
+      /* 2. the descriptors must satisfy the contract the sidebar resolves:
+            title/icon may be functions (textOf/iconOf call them), and the order
+            decides the tab strip position. */
+      const filesTab = service.getTab('dsh-remote-ssh:files')
+      const titleOf = (value) => (typeof value === 'function' ? value() : value)
+      const labels = service.getTabs().map((tab) => titleOf(tab.title))
+      const icons = service.getTabs().map((tab) => (typeof tab.icon === 'function' ? tab.icon(16) : tab.icon))
+      const components = service.getTabs().filter((tab) => typeof tab.component !== 'function')
+
+      /* 3. a second mount (HMR re-apply) must not throw or duplicate */
+      exports.apply(ctx)
+      const afterSecond = service.getTabs().length
+
+      /* 4. and unlinking must leave nothing behind */
+      for (const dispose of ctx.disposers) dispose()
+      const afterDispose = service.getTabs().length
+
+      /* 5. without better-sidebar the client must stay silent, not crash */
+      const bare = makeCtx(undefined)
+      exports.apply(bare)
+
+      report({
+        ok: true,
+        id: record.id,
+        exports: Object.keys(exports).sort(),
+        tabs: ids,
+        orders,
+        labels,
+        iconNodes: icons.length,
+        componentsWithoutFunction: components.length,
+        afterSecond,
+        afterDispose,
+        bareDisposers: bare.disposers.length,
+        styles: document.querySelectorAll('style').length,
+        filesTabHasRoute: typeof filesTab === 'object',
+      })
+    } catch (error) {
+      report({ ok: false, error: String(error && error.stack ? error.stack : error) })
+    }
+  })()
+</script>
+</body>
+</html>

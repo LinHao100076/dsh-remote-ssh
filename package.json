@@ -1,0 +1,68 @@
+{
+  "name": "dsh-remote-ssh",
+  "version": "0.1.0",
+  "description": "Remote SSH for DSH: browse remote files, open remote terminals, and mirror local agent edits to a remote server with per-mapping sync direction.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "ssh",
+    "remote",
+    "sftp"
+  ],
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    },
+    "manifestVersion": 1
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node --check src/index.js && node --check lib/client.js",
+    "test": "node test/smoke.mjs && node test/ssh.mjs && node test/files.mjs",
+    "test:smoke": "node test/smoke.mjs",
+    "test:ssh": "node test/ssh.mjs",
+    "test:files": "node test/files.mjs",
+    "test:live": "node scripts/check-ssh.mjs",
+    "test:e2e": "node test/e2e-profile.mjs"
+  },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.0-rc.2"
+  },
+  "peerDependencies": {
+    "dsh-better-sidebar": "*"
+  },
+  "peerDependenciesMeta": {
+    "dsh-better-sidebar": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "ssh2": "^1.17.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "esbuild": "^0.25.10"
+  }
+}

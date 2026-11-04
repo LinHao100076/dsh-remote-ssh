@@ -1,0 +1,13 @@
+# dsh-remote-ssh bundle patch — mounts this package as one profile layer.
+#
+# The host half is `src/index.js`; the client half is `lib/client.js` (build it
+# with `npm run build`). `dsh.bundle.patch` in package.json points here, so
+# `dsh plugin --profile <p> add <pkg>` appends this layer after every earlier
+# bundle layer.
+
+- insert:
+    - id: dsh-remote-ssh
+      name: 'dsh-remote-ssh'
+      config:
+        # Override to move the state file (hosts, mappings, baselines).
+        # storePath: '~/.dsh/storages/dsh-remote-ssh/state.json'

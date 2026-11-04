@@ -1,0 +1,194 @@
+/**
+ * File-layer test over an in-memory SFTP stub.
+ *
+ * Exercises the logic this plugin owns — entry typing and ordering, binary and
+ * size guards, stale-write detection, temp-file + rename publication, and error
+ * codes — without an SSH server. The wire protocol itself is ssh2's job; use
+ * `scripts/check-ssh.mjs` against a real host for that.
+ *
+ * Run: `node test/files.mjs`
+ */
+import assert from 'node:assert/strict'
+import { RemoteFiles } from '../src/remote/files.js'
+
+/** Minimal in-memory SFTP wrapper shaped like ssh2's. */
+class MemorySftp {
+  constructor() {
+    this.entries = new Map()
+    this.dirs = new Set(['/', '/srv', '/srv/app'])
+    this.put('/srv/app/main.ts', 'export const port = 8080\n')
+    this.put('/srv/app/README.md', '# app\n')
+    this.put('/srv/app/logo.bin', Buffer.from([0, 1, 2, 3]))
+  }
+
+  put(path, content) {
+    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8')
+    this.entries.set(path, { buffer, mtime: Math.floor(Date.now() / 1000), mode: 0o100644 })
+  }
+
+  #fail(cb, code = 2) {
+    const error = new Error(code === 2 ? 'No such file' : 'Failure')
+    error.code = code
+    cb(error)
+  }
+
+  readdir(path, cb) {
+    if (!this.dirs.has(path) && ![...this.entries.keys()].some((key) => key.startsWith(`${path}/`))) {
+      this.#fail(cb)
+      return
+    }
+    const seen = new Set()
+    const rows = []
+    for (const key of [...this.entries.keys(), ...this.dirs]) {
+      if (!key.startsWith(`${path}/`)) continue
+      const rest = key.slice(path.length + 1)
+      if (rest === '' || rest.includes('/')) continue
+      if (seen.has(rest)) continue
+      seen.add(rest)
+      const full = `${path}/${rest}`
+      const file = this.entries.get(full)
+      rows.push({
+        filename: rest,
+        attrs: file
+          ? { mode: file.mode, size: file.buffer.length, mtime: file.mtime }
+          : { mode: 0o040755, size: 0, mtime: 1700000000 },
+      })
+    }
+    cb(undefined, rows)
+  }
+
+  stat(path, cb) {
+    const file = this.entries.get(path)
+    if (file !== undefined) {
+      cb(undefined, { mode: file.mode, size: file.buffer.length, mtime: file.mtime })
+      return
+    }
+    if (this.dirs.has(path)) {
+      cb(undefined, { mode: 0o040755, size: 0, mtime: 1700000000 })
+      return
+    }
+    this.#fail(cb)
+  }
+
+  readFile(path, cb) {
+    const file = this.entries.get(path)
+    if (file === undefined) { this.#fail(cb); return }
+    cb(undefined, file.buffer)
+  }
+
+  writeFile(path, data, options, cb) {
+    if (typeof options === 'function') { cb = options; options = {} }
+    const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
+    this.entries.set(path, {
+      buffer,
+      mtime: Math.floor(Date.now() / 1000),
+      mode: (options?.mode ?? 0o644) | 0o100000,
+    })
+    cb(undefined)
+  }
+
+  rename(from, to, cb) {
+    const file = this.entries.get(from)
+    if (file === undefined) { this.#fail(cb); return }
+    this.entries.delete(from)
+    this.entries.set(to, file)
+    cb(undefined)
+  }
+
+  unlink(path, cb) {
+    if (!this.entries.has(path)) { this.#fail(cb); return }
+    this.entries.delete(path)
+    cb(undefined)
+  }
+
+  mkdir(path, options, cb) {
+    if (typeof options === 'function') { cb = options }
+    if (this.dirs.has(path)) {
+      const error = new Error('Failure'); error.code = 4
+      cb(error)
+      return
+    }
+    this.dirs.add(path)
+    cb(undefined)
+  }
+
+  rmdir(path, cb) {
+    this.dirs.delete(path)
+    cb(undefined)
+  }
+
+  chmod(path, mode, cb) { cb(undefined) }
+}
+
+const sftp = new MemorySftp()
+const executed = []
+const pool = {
+  sftp: async () => sftp,
+  exec: async (_host, command) => {
+    executed.push(command)
+    if (command.includes('uname -sr')) {
+      return { stdout: 'Linux 6.1.0\n/bin/bash\n/home/u\n/usr/bin/tmux\n', stderr: '', code: 0 }
+    }
+    return { stdout: '', stderr: '', code: 0 }
+  },
+}
+const files = new RemoteFiles(pool)
+const host = { id: 'h1', name: 'test' }
+
+/* listing: directories first, then names, with typed rows */
+const entries = await files.list(host, '/srv/app')
+assert.deepEqual(entries.map((entry) => entry.name), ['main.ts', 'README.md', 'logo.bin'].sort((a, b) => a.localeCompare(b)))
+assert.equal(entries[0].type, 'file')
+assert.equal(entries.find((entry) => entry.name === 'main.ts').path, '/srv/app/main.ts')
+assert.equal(entries.find((entry) => entry.name === 'main.ts').modeText, 0o644)
+
+/* text read + guards */
+const text = await files.readText(host, '/srv/app/main.ts')
+assert.match(text.text, /port = 8080/)
+await assert.rejects(() => files.readText(host, '/srv/app/logo.bin'), (error) => error.code === 'binary')
+await assert.rejects(() => files.readText(host, '/srv/app/missing.ts'), (error) => error.code === 'not-found')
+await assert.rejects(
+  () => files.readText(host, '/srv/app/main.ts', { maxBytes: 4 }),
+  (error) => error.code === 'too-large',
+)
+
+/* atomic write: temp file never survives, content and mtime move forward */
+const before = await files.stat(host, '/srv/app/main.ts')
+const written = await files.writeText(host, '/srv/app/main.ts', 'export const port = 9090\n')
+assert.ok(written.mtimeMs >= before.mtimeMs)
+assert.equal(sftp.entries.get('/srv/app/main.ts').buffer.toString('utf8'), 'export const port = 9090\n')
+assert.equal([...sftp.entries.keys()].some((key) => key.includes('.dsh-tmp-')), false, 'no temp file is left behind')
+
+/* stale guard: an expected mtime that no longer matches is refused */
+await assert.rejects(
+  () => files.writeText(host, '/srv/app/main.ts', 'x', { expectedMtimeMs: 1 }),
+  (error) => error.code === 'stale',
+)
+
+/* directories are created with parents, and existing ones are tolerated */
+await files.mkdir(host, '/srv/app/deep/nested/dir')
+assert.ok(sftp.dirs.has('/srv/app/deep/nested/dir'))
+await files.mkdir(host, '/srv/app/deep')
+
+/* rename + remove */
+await files.rename(host, '/srv/app/README.md', '/srv/app/docs/README.md')
+assert.ok(sftp.entries.has('/srv/app/docs/README.md'))
+assert.equal(sftp.entries.has('/srv/app/README.md'), false)
+
+const removed = await files.remove(host, '/srv/app/logo.bin')
+assert.equal(removed.removed, true)
+assert.equal(sftp.entries.has('/srv/app/logo.bin'), false)
+
+const recursive = await files.remove(host, '/srv/app/deep', { recursive: true })
+assert.equal(recursive.removed, true)
+assert.match(executed.at(-1), /^rm -rf -- '\/srv\/app\/deep'$/)
+
+/* environment probe is cached per host */
+const info = await files.info(host)
+assert.equal(info.tmux, true)
+assert.equal(info.kernel, 'Linux 6.1.0')
+assert.equal(info.shell, '/bin/bash')
+assert.equal(info.home, '/home/u')
+assert.equal(await files.info(host), info)
+
+console.log('files: ok (listing, text guards, atomic write, stale guard, mkdir, rename, remove)')

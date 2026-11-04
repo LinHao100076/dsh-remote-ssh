@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>dsh-remote-ssh · UI 原型</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --surface: #fafbfc;
+    --surface-2: #f1f3f6;
+    --line: #e6e8ec;
+    --line-2: #d8dce3;
+    --fg: #1c2028;
+    --fg-dim: #5c6472;
+    --fg-mute: #8d95a3;
+    --accent: #2f6feb;
+    --accent-soft: #e8f0ff;
+    --green: #12805c;
+    --green-soft: #e4f4ee;
+    --amber: #a2610a;
+    --amber-soft: #fdf1dd;
+    --red: #c0332b;
+    --red-soft: #fdeceb;
+    --violet: #6b4fd8;
+    --term-bg: #fbfbfd;
+    --term-fg: #24292f;
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 8px 24px -12px rgba(16,24,40,.18);
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0e1014;
+    --panel: #15181e;
+    --surface: #191d24;
+    --surface-2: #1e232b;
+    --line: #262b34;
+    --line-2: #333a46;
+    --fg: #e7eaf0;
+    --fg-dim: #a2abb9;
+    --fg-mute: #737c8a;
+    --accent: #6ba1ff;
+    --accent-soft: #1b2942;
+    --green: #45c08d;
+    --green-soft: #12291f;
+    --amber: #e2ab55;
+    --amber-soft: #2b2313;
+    --red: #f07f74;
+    --red-soft: #2d1917;
+    --violet: #a48bff;
+    --term-bg: #101318;
+    --term-fg: #dbe1ea;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -14px rgba(0,0,0,.7);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.5 ui-sans-serif, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  svg { display: block; }
+  .ic { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ── top bar ───────────────────────────────────────────── */
+  .topbar {
+    height: 56px; display: flex; align-items: center; gap: 14px;
+    padding: 0 20px; border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--panel) 88%, transparent);
+    backdrop-filter: blur(8px); position: sticky; top: 0; z-index: 10;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; letter-spacing: -.01em; }
+  .brand .logo {
+    width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center;
+    background: linear-gradient(140deg, var(--accent), var(--violet)); color: #fff; font-size: 12px; font-weight: 700;
+  }
+  .brand small { font-weight: 400; color: var(--fg-mute); font-size: 11px; margin-left: 2px; }
+  .views { display: flex; gap: 4px; margin-left: auto; background: var(--surface-2); padding: 3px; border-radius: 9px; }
+  .views button {
+    padding: 4px 10px; border-radius: 6px; color: var(--fg-dim); font-size: 12px; white-space: nowrap;
+    transition: background .15s, color .15s;
+  }
+  .views button:hover { color: var(--fg); }
+  .views button[aria-selected="true"] { background: var(--panel); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.08); font-weight: 500; }
+  .icon-btn {
+    width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center;
+    color: var(--fg-dim); border: 1px solid transparent;
+  }
+  .icon-btn:hover { background: var(--surface-2); color: var(--fg); }
+
+  /* ── shell layout ──────────────────────────────────────── */
+  .shell {
+    height: calc(100vh - 56px); max-width: 1180px; margin: 0 auto;
+    display: flex; gap: 0; border-left: 1px solid var(--line); border-right: 1px solid var(--line);
+    background: var(--panel); overflow: hidden;
+  }
+  .context { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+  .ctx-head {
+    height: 42px; display: flex; align-items: center; gap: 8px; padding: 0 18px;
+    border-bottom: 1px solid var(--line); color: var(--fg-mute); font-size: 11.5px; letter-spacing: .02em;
+  }
+  .ctx-body { flex: 1; padding: 26px 26px 0; overflow: hidden; }
+  .msg { max-width: 560px; margin-bottom: 18px; }
+  .msg .who { font-size: 11px; color: var(--fg-mute); margin-bottom: 5px; }
+  .msg .bubble {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 13px;
+    color: var(--fg-dim); line-height: 1.65; box-shadow: var(--shadow);
+  }
+  .msg.me { margin-left: auto; }
+  .msg.me .bubble { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 18%, var(--line)); color: var(--fg); }
+  .tool {
+    display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11.5px;
+    color: var(--fg-mute); padding: 7px 10px; border: 1px dashed var(--line-2); border-radius: 8px; margin-top: 8px;
+  }
+  .tool b { color: var(--fg-dim); font-weight: 600; }
+  .ctx-fade { height: 120px; background: linear-gradient(to bottom, transparent, var(--bg)); margin-top: -60px; position: relative; }
+
+  /* ── panel ─────────────────────────────────────────────── */
+  .panel {
+    width: 424px; flex: none; display: flex; flex-direction: column;
+    border-left: 1px solid var(--line); background: var(--panel); position: relative;
+  }
+  .p-head { padding: 12px 14px 0; border-bottom: 1px solid var(--line); }
+  .host-line { display: flex; align-items: center; gap: 9px; }
+  .host-ico {
+    width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center;
+    background: var(--surface-2); color: var(--fg-dim); flex: none;
+  }
+  .host-txt { min-width: 0; flex: 1; }
+  .host-name { font-weight: 600; letter-spacing: -.01em; display: flex; align-items: center; gap: 6px; }
+  .host-meta { font-size: 11px; color: var(--fg-mute); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-mute); flex: none; }
+  .dot.on { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+  .dot.warn { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+  .dot.err { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
+  .dot.pulse { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+
+  .tabs { display: flex; gap: 2px; margin-top: 11px; }
+  .tabs button {
+    position: relative; padding: 7px 10px 9px; color: var(--fg-mute); font-size: 12.5px;
+    display: flex; align-items: center; gap: 6px; border-radius: 6px 6px 0 0;
+  }
+  .tabs button:hover { color: var(--fg); background: var(--surface); }
+  .tabs button[aria-selected="true"] { color: var(--fg); font-weight: 500; }
+  .tabs button[aria-selected="true"]::after {
+    content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px;
+    background: var(--accent); border-radius: 2px 2px 0 0;
+  }
+  .count {
+    min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; font-size: 10.5px;
+    display: grid; place-items: center; background: var(--amber-soft); color: var(--amber); font-weight: 600;
+  }
+
+  .p-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .pane { flex: 1; min-height: 0; display: none; flex-direction: column; }
+  .pane[data-active="true"] { display: flex; }
+  .p-foot {
+    border-top: 1px solid var(--line); padding: 7px 12px; display: flex; align-items: center; gap: 12px;
+    font-size: 11px; color: var(--fg-mute); background: var(--surface);
+  }
+  .p-foot .sep { width: 1px; height: 10px; background: var(--line-2); }
+  .p-foot b { font-weight: 500; color: var(--fg-dim); }
+
+  /* ── files ─────────────────────────────────────────────── */
+  .bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .crumb { flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; font-family: var(--mono); font-size: 11.5px; color: var(--fg-dim); overflow: hidden; }
+  .crumb span { white-space: nowrap; }
+  .crumb .last { color: var(--fg); font-weight: 600; }
+  .crumb .sl { color: var(--fg-mute); }
+  .tree { flex: 1; overflow: auto; padding: 4px 6px 8px; }
+  .row {
+    display: flex; align-items: center; gap: 6px; padding: 0 6px; height: 26px; border-radius: 6px;
+    color: var(--fg-dim); cursor: default; position: relative; user-select: none;
+  }
+  .row:hover { background: var(--surface-2); }
+  .row[aria-selected="true"] { background: var(--accent-soft); color: var(--fg); }
+  .row[aria-selected="true"] .name { color: var(--fg); }
+  .chev { width: 12px; height: 12px; flex: none; color: var(--fg-mute); transition: transform .12s; }
+  .row.open > .chev { transform: rotate(90deg); }
+  .row .file-ico {
+    width: 14px; height: 14px; flex: none; color: var(--fg-mute);
+    fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .row .name { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .tag {
+    margin-left: auto; display: flex; align-items: center; gap: 4px; font-size: 10.5px; font-family: var(--mono);
+  }
+  .st { font-weight: 700; }
+  .st.m { color: var(--amber); }
+  .st.a { color: var(--green); }
+  .st.d { color: var(--red); }
+  .st.u { color: var(--fg-mute); }
+  .up { color: var(--accent); display: flex; }
+  .row .acts { display: none; margin-left: 6px; gap: 2px; }
+  .row:hover .acts { display: flex; }
+  .row:hover .acts + .tag, .row:hover .tag { display: none; }
+  .act { width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; color: var(--fg-mute); }
+  .act:hover { background: var(--panel); color: var(--fg); box-shadow: 0 0 0 1px var(--line); }
+  .excluded .name, .excluded .file-ico { opacity: .45; }
+  .group[hidden] { display: none; }
+
+  .peek { border-top: 1px solid var(--line); background: var(--surface); }
+  .peek-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px 6px; }
+  .peek-path { font-family: var(--mono); font-size: 11.5px; color: var(--fg); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .peek-meta { font-size: 10.5px; color: var(--fg-mute); font-family: var(--mono); }
+  .code { margin: 0 12px 8px; padding: 8px 10px; border-radius: 7px; background: var(--term-bg); border: 1px solid var(--line); font-family: var(--mono); font-size: 11px; line-height: 1.65; color: var(--term-fg); overflow: hidden; }
+  .code .k { color: var(--violet); } .code .s { color: var(--green); } .code .c { color: var(--fg-mute); }
+  .peek-acts { display: flex; gap: 6px; padding: 0 12px 10px; }
+
+  /* ── buttons ───────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    height: 28px; padding: 0 11px; border-radius: 7px; border: 1px solid var(--line-2);
+    background: var(--panel); color: var(--fg-dim); font-size: 12px; transition: .14s;
+  }
+  .btn:hover { border-color: var(--fg-mute); color: var(--fg); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn.ghost { border-color: transparent; }
+  .btn.ghost:hover { background: var(--surface-2); }
+  .btn.danger { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, var(--line)); }
+  .btn.sm { height: 24px; padding: 0 8px; font-size: 11.5px; border-radius: 6px; }
+
+  /* ── terminal ──────────────────────────────────────────── */
+  .ttabs { display: flex; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .ttab { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--fg-dim); }
+  .ttab[aria-selected="true"] { background: var(--surface-2); color: var(--fg); }
+  .ttab .x { color: var(--fg-mute); }
+  .term-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
+  .term-status {
+    display: flex; align-items: center; gap: 8px; padding: 5px 12px; font-size: 10.5px; color: var(--fg-mute);
+    font-family: var(--mono); border-bottom: 1px solid var(--line);
+  }
+  .term {
+    flex: 1; overflow: auto; padding: 10px 12px 14px; font-family: var(--mono); font-size: 11.5px;
+    line-height: 1.62; color: var(--term-fg); white-space: pre-wrap; word-break: break-word; outline: none;
+  }
+  .t-green { color: var(--green); } .t-blue { color: var(--accent); } .t-dim { color: var(--fg-mute); }
+  .t-amber { color: var(--amber); } .t-violet { color: var(--violet); } .t-red { color: var(--red); }
+  .caret { display: inline-block; width: 6px; height: 13px; background: var(--fg-dim); vertical-align: -2px; animation: blink 1.1s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0 } }
+  .hintbar { display: flex; align-items: center; gap: 10px; padding: 5px 12px; border-top: 1px solid var(--line); font-size: 10.5px; color: var(--fg-mute); background: var(--surface); }
+  kbd { font: 10.5px var(--mono); padding: 1px 4px; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; color: var(--fg-dim); background: var(--panel); }
+
+  /* ── sync ──────────────────────────────────────────────── */
+  .scroll { flex: 1; overflow: auto; padding: 12px; }
+  .card { border: 1px solid var(--line); border-radius: 9px; background: var(--panel); margin-bottom: 10px; overflow: hidden; }
+  .card-h { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--line); font-size: 11.5px; color: var(--fg-dim); }
+  .card-h b { color: var(--fg); font-weight: 600; font-size: 12px; }
+  .card-b { padding: 10px 11px; }
+  .map-row { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; }
+  .path { padding: 2px 6px; border-radius: 5px; background: var(--surface-2); color: var(--fg-dim); max-width: 145px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .arrow { color: var(--fg-mute); display: flex; gap: 1px; }
+  .seg { display: flex; background: var(--surface-2); border-radius: 7px; padding: 2px; gap: 2px; }
+  .seg button { flex: 1; height: 24px; border-radius: 5px; font-size: 11.5px; color: var(--fg-mute); }
+  .seg button[aria-selected="true"] { background: var(--panel); color: var(--fg); font-weight: 500; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .qitem { display: flex; align-items: center; gap: 8px; padding: 7px 11px; border-bottom: 1px solid var(--line); font-size: 11.5px; }
+  .qitem:last-child { border-bottom: 0; }
+  .qico { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; flex: none; }
+  .qico.up { background: var(--accent-soft); color: var(--accent); }
+  .qico.dn { background: var(--green-soft); color: var(--green); }
+  .qico.off { background: var(--surface-2); color: var(--fg-mute); }
+  .qname { font-family: var(--mono); font-size: 11px; color: var(--fg-dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .qstate { font-size: 10.5px; color: var(--fg-mute); font-family: var(--mono); flex: none; }
+  .qbar { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--accent); transition: width .3s; }
+  .conflict { border: 1px solid color-mix(in srgb, var(--amber) 32%, var(--line)); background: var(--amber-soft); border-radius: 9px; padding: 10px 11px; margin-bottom: 10px; }
+  .conflict-h { display: flex; align-items: center; gap: 7px; color: var(--amber); font-size: 11.5px; font-weight: 600; margin-bottom: 4px; }
+  .conflict p { margin: 0 0 8px; font-size: 11.5px; color: var(--fg-dim); line-height: 1.55; }
+  .conflict .acts { display: flex; gap: 6px; }
+  .stat { display: flex; gap: 14px; padding: 9px 12px; font-size: 10.5px; color: var(--fg-mute); font-family: var(--mono); }
+  .stat b { color: var(--fg-dim); font-weight: 600; }
+
+  /* ── settings / forms ──────────────────────────────────── */
+  .form { display: grid; gap: 10px; }
+  .field label { display: block; font-size: 11px; color: var(--fg-mute); margin-bottom: 4px; }
+  .field input, .field select {
+    width: 100%; height: 30px; padding: 0 9px; border-radius: 7px; border: 1px solid var(--line-2);
+    background: var(--panel); color: var(--fg); font: 12px var(--mono); outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .grid2 { display: grid; grid-template-columns: 1fr 88px; gap: 8px; }
+  .switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+  .switch:last-child { border-bottom: 0; }
+  .switch .lbl { font-size: 12px; color: var(--fg-dim); }
+  .switch .sub { font-size: 10.5px; color: var(--fg-mute); margin-top: 1px; }
+  .sw { width: 30px; height: 17px; border-radius: 999px; background: var(--line-2); position: relative; flex: none; transition: .16s; }
+  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: .16s; }
+  .sw[aria-checked="true"] { background: var(--accent); }
+  .sw[aria-checked="true"]::after { transform: translateX(13px); }
+  .sect { font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-mute); margin: 16px 0 8px; }
+  .sect:first-child { margin-top: 2px; }
+
+  /* ── connect / states ──────────────────────────────────── */
+  .center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; }
+  .big-ico { width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center; background: var(--surface-2); color: var(--fg-dim); margin-bottom: 12px; }
+  .center h2 { margin: 0 0 5px; font-size: 14px; font-weight: 600; }
+  .center p { margin: 0 0 16px; font-size: 12px; color: var(--fg-mute); line-height: 1.6; max-width: 270px; }
+  .hostlist { width: 100%; display: grid; gap: 6px; margin-bottom: 14px; }
+  .hitem { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; text-align: left; }
+  .hitem:hover { border-color: var(--line-2); background: var(--surface); }
+  .hitem .nm { font-family: var(--mono); font-size: 11.5px; color: var(--fg); }
+  .hitem .ad { font-size: 10.5px; color: var(--fg-mute); font-family: var(--mono); }
+  .hitem .r { margin-left: auto; color: var(--fg-mute); }
+  .hint { font-size: 10.5px; color: var(--fg-mute); display: flex; align-items: center; gap: 5px; justify-content: center; }
+
+  .steps { width: 100%; display: grid; gap: 2px; text-align: left; margin-bottom: 8px; }
+  .step { display: flex; align-items: center; gap: 9px; padding: 7px 2px; font-size: 12px; color: var(--fg-mute); }
+  .step .mark { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--line-2); display: grid; place-items: center; flex: none; }
+  .step.done { color: var(--fg-dim); }
+  .step.done .mark { border-color: var(--green); background: var(--green); color: #fff; }
+  .step.now { color: var(--fg); }
+  .step.now .mark { border-color: var(--accent); border-top-color: transparent; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg) } }
+  .step .ms { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--fg-mute); }
+
+  .err-box { width: 100%; border: 1px solid color-mix(in srgb, var(--red) 26%, var(--line)); background: var(--red-soft); border-radius: 9px; padding: 10px; text-align: left; margin-bottom: 12px; }
+  .err-box .t { display: flex; align-items: center; gap: 6px; color: var(--red); font-weight: 600; font-size: 12px; margin-bottom: 3px; }
+  .err-box code { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim); }
+
+  /* ── toast ─────────────────────────────────────────────── */
+  .toast {
+    position: absolute; left: 50%; bottom: 46px; transform: translate(-50%, 8px);
+    background: var(--fg); color: var(--panel); padding: 7px 12px; border-radius: 8px;
+    font-size: 11.5px; opacity: 0; pointer-events: none; transition: .2s; white-space: nowrap; z-index: 5;
+    box-shadow: 0 8px 24px -8px rgba(0,0,0,.5);
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  @media (max-width: 900px) {
+    .context { display: none; }
+    .panel { width: 100%; border-left: 0; }
+    .shell { border: 0; }
+    .views button { padding: 4px 7px; }
+  }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h3.6l1.7 2H19a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-term" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></symbol>
+    <symbol id="i-sync" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-13.7-4.6L3 9"/><path d="M3 4v5h5"/><path d="M4 13a8 8 0 0 0 13.7 4.6L21 15"/><path d="M21 20v-5h-5"/></symbol>
+    <symbol id="i-cog" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6h.09A1.7 1.7 0 0 0 10 3.05V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 3l9 16H3z"/><path d="M12 9v5M12 17h.01"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-ext" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8 8"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7L12.5 19"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></symbol>
+  </defs>
+</svg>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">R</span>
+    dsh-remote-ssh
+    <small>UI 原型 · v0.1</small>
+  </div>
+  <div class="views" role="tablist" aria-label="界面状态">
+    <button role="tab" data-view="connect">连接页</button>
+    <button role="tab" data-view="connecting">连接中</button>
+    <button role="tab" data-view="files" aria-selected="true">文件</button>
+    <button role="tab" data-view="terminal">终端</button>
+    <button role="tab" data-view="sync">同步</button>
+    <button role="tab" data-view="settings">设置</button>
+    <button role="tab" data-view="error">错误</button>
+  </div>
+  <button class="icon-btn" id="themeBtn" title="切换主题"><svg class="ic"><use href="#i-moon"/></svg></button>
+</header>
+
+<main class="shell">
+  <!-- 会话区示意：仅用于给侧边栏提供空间语境 -->
+  <section class="context">
+    <div class="ctx-head">
+      <svg class="ic" style="width:12px;height:12px"><use href="#i-term"/></svg>
+      DSH 会话 · 右侧栏插件渲染位
+    </div>
+    <div class="ctx-body">
+      <div class="msg">
+        <div class="who">你</div>
+        <div class="bubble">把 /srv/app 那台机器连上，改完的 main.ts 自动同步过去，然后跑一下测试。</div>
+      </div>
+      <div class="msg me">
+        <div class="who">DSH</div>
+        <div class="bubble">已连上 prod-web-01。本地改动的 3 个文件正在上传，终端里开始跑了。</div>
+        <div class="tool"><b>ssh_exec</b> npm test -- --watch=false</div>
+      </div>
+      <div class="ctx-fade"></div>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <!-- 头部 -->
+    <div class="p-head">
+      <div class="host-line" id="hostLine">
+        <span class="host-ico"><svg class="ic"><use href="#i-server"/></svg></span>
+        <div class="host-txt">
+          <div class="host-name"><span class="dot on" id="hostDot"></span><span id="hostName">prod-web-01</span></div>
+          <div class="host-meta" id="hostMeta">ubuntu@10.0.3.21:22 · Ubuntu 22.04 · 18ms</div>
+        </div>
+        <div style="display:flex;gap:2px">
+          <button class="icon-btn" title="重新连接" onclick="toast('已重新连接 · 复用现有通道')"><svg class="ic"><use href="#i-refresh"/></svg></button>
+          <button class="icon-btn" title="断开" onclick="toast('已断开 prod-web-01')"><svg class="ic"><use href="#i-lock"/></svg></button>
+        </div>
+      </div>
+      <div class="tabs" role="tablist">
+        <button role="tab" data-pane="files" aria-selected="true"><svg class="ic"><use href="#i-folder"/></svg>文件</button>
+        <button role="tab" data-pane="terminal"><svg class="ic"><use href="#i-term"/></svg>终端</button>
+        <button role="tab" data-pane="sync"><svg class="ic"><use href="#i-sync"/></svg>同步<span class="count">3</span></button>
+        <button role="tab" data-pane="settings"><svg class="ic"><use href="#i-cog"/></svg>设置</button>
+      </div>
+    </div>
+
+    <div class="p-body">
+
+      <!-- ───── 未连接 ───── -->
+      <section class="pane" data-pane="connect">
+        <div class="center">
+          <div class="big-ico"><svg class="ic" style="width:20px;height:20px"><use href="#i-server"/></svg></div>
+          <h2>连接远程服务器</h2>
+          <p>选择最近连接，或从 ~/.ssh/config 里挑一个 Host。</p>
+          <div class="hostlist">
+            <button class="hitem" onclick="setView('connecting')">
+              <svg class="ic" style="color:var(--fg-mute)"><use href="#i-server"/></svg>
+              <div><div class="nm">prod-web-01</div><div class="ad">ubuntu@10.0.3.21</div></div>
+              <span class="r"><svg class="ic"><use href="#i-chev"/></svg></span>
+            </button>
+            <button class="hitem" onclick="setView('connecting')">
+              <svg class="ic" style="color:var(--fg-mute)"><use href="#i-server"/></svg>
+              <div><div class="nm">gpu-box</div><div class="ad">root@192.168.7.4 · ProxyJump bastion</div></div>
+              <span class="r"><svg class="ic"><use href="#i-chev"/></svg></span>
+            </button>
+            <button class="hitem" onclick="setView('connecting')">
+              <svg class="ic" style="color:var(--fg-mute)"><use href="#i-server"/></svg>
+              <div><div class="nm">staging</div><div class="ad">deploy@staging.internal</div></div>
+              <span class="r"><svg class="ic"><use href="#i-chev"/></svg></span>
+            </button>
+          </div>
+          <button class="btn primary" onclick="setView('connecting')"><svg class="ic"><use href="#i-plus"/></svg>新建 SSH 连接</button>
+          <div class="hint" style="margin-top:12px"><svg class="ic" style="width:11px;height:11px"><use href="#i-link"/></svg>已从 ssh config 读取 3 个 Host</div>
+        </div>
+      </section>
+
+      <!-- ───── 连接中 ───── -->
+      <section class="pane" data-pane="connecting">
+        <div class="center">
+          <div class="big-ico"><svg class="ic" style="width:20px;height:20px"><use href="#i-server"/></svg></div>
+          <h2>正在连接 prod-web-01</h2>
+          <p>使用密钥 ~/.ssh/id_ed25519，校验主机指纹。</p>
+          <div class="steps">
+            <div class="step done"><span class="mark"><svg class="ic" style="width:9px;height:9px;stroke-width:3"><use href="#i-check"/></svg></span>解析 ssh config<span class="ms">2ms</span></div>
+            <div class="step done"><span class="mark"><svg class="ic" style="width:9px;height:9px;stroke-width:3"><use href="#i-check"/></svg></span>校验 known_hosts<span class="ms">6ms</span></div>
+            <div class="step now"><span class="mark"></span>密钥认证与通道建立</div>
+            <div class="step"><span class="mark"></span>探测远端环境（uname / tmux / git）</div>
+            <div class="step"><span class="mark"></span>挂载路径映射 /srv/app</div>
+          </div>
+          <button class="btn ghost sm" onclick="setView('files')">跳过动画</button>
+        </div>
+      </section>
+
+      <!-- ───── 文件 ───── -->
+      <section class="pane" data-pane="files" data-active="true">
+        <div class="bar">
+          <div class="crumb">
+            <span>prod-web-01</span><span class="sl">:</span><span class="last">/srv/app</span>
+          </div>
+          <button class="icon-btn" style="width:24px;height:24px" title="在远端搜索" onclick="toast('远端 ripgrep 搜索：输入关键字')"><svg class="ic"><use href="#i-search"/></svg></button>
+          <button class="icon-btn" style="width:24px;height:24px" title="上传文件" onclick="toast('选择本地文件 → 上传到 /srv/app')"><svg class="ic"><use href="#i-up"/></svg></button>
+          <button class="icon-btn" style="width:24px;height:24px" title="刷新" onclick="toast('已刷新，目录监听保持开启')"><svg class="ic"><use href="#i-refresh"/></svg></button>
+        </div>
+
+        <div class="tree" id="tree">
+          <div class="row" data-row><span class="chev"></span><svg class="file-ico"><use href="#i-file"/></svg><span class="name">.gitignore</span><span class="tag"><span class="st u">·</span></span></div>
+
+          <div class="row open" data-toggle="g-src"><svg class="chev ic"><use href="#i-chev"/></svg><svg class="file-ico" style="color:var(--accent)"><use href="#i-folder"/></svg><span class="name">src</span></div>
+          <div class="group" data-group="g-src">
+            <div class="row" style="padding-left:24px" data-row><span class="chev"></span><svg class="file-ico"><use href="#i-file"/></svg><span class="name">index.ts</span><span class="tag"><span class="up"><svg class="ic" style="width:11px;height:11px"><use href="#i-up"/></svg></span><span class="st m">M</span></span></div>
+
+            <div class="row open" data-toggle="g-app" style="padding-left:24px"><svg class="chev ic"><use href="#i-chev"/></svg><svg class="file-ico" style="color:var(--accent)"><use href="#i-folder"/></svg><span class="name">app</span></div>
+            <div class="group open" data-group="g-app">
+              <div class="row" data-row data-file="src/app/main.ts" data-lines="1 import { createServer } from 'node:http'|2 import { loadConfig } from './config.js'|3 |4 const cfg = loadConfig()  // port 8080" data-meta="2.4 KB · 已修改 · 待上传" style="padding-left:42px" aria-selected="true">
+                <span class="chev"></span><svg class="file-ico"><use href="#i-file"/></svg><span class="name">main.ts</span>
+                <span class="acts">
+                  <button class="act" title="下载到本地映射目录" onclick="toast('已下载 → ~/WorkBuddy/app/src/app/main.ts')"><svg class="ic" style="width:12px;height:12px"><use href="#i-down"/></svg></button>
+                  <button class="act" title="立即上传" onclick="toast('已上传 main.ts · 42ms')"><svg class="ic" style="width:12px;height:12px"><use href="#i-up"/></svg></button>
+                </span>
+                <span class="tag"><span class="up"><svg class="ic" style="width:11px;height:11px"><use href="#i-up"/></svg></span><span class="st m">M</span></span>
+              </div>
+              <div class="row" style="padding-left:42px" data-file="src/app/router.ts" data-lines="1 import { Router } from './router'|2 |3 export const router = new Router()" data-meta="8.1 KB · 与远程一致">
+                <span class="chev"></span><svg class="file-ico"><use href="#i-file"/></svg><span class="name">router.ts</span><span class="tag"><span class="st u">·</span></span>
+              </div>
+              <div class="row" data-row style="padding-left:42px"><span class="chev"></span><svg class="file-ico"><use href="#i-file"/></svg><span class="name">config.ts</span><span class="tag"><span class="st a">A</span></span></div>
+            </div>
+
+            <div class="row" style="padding-left:24px" data-row><span class="chev"></span><svg class="file-ico"><use href="#i-file"/></svg><span class="name">style.css</span></div>
+          </div>
+
+          <div class="row" data-toggle="g-tests"><svg class="chev ic"><use href="#i-chev"/></svg><svg class="file-ico" style="color:var(--accent)"><use href="#i-folder"/></svg><span class="name">tests</span></div>
+          <div class="group" data-group="g-tests" hidden>
+            <div class="row" style="padding-left:24px" data-row><span class="chev"></span><svg class="file-ico"><use href="#i-file"/></svg><span class="name">app.spec.ts</span></div>
+          </div>
+
+          <div class="row" data-row><span class="chev"></span><svg class="file-ico"><use href="#i-file"/></svg><span class="name">package.json</span><span class="tag"><span class="st m">M</span></span></div>
+          <div class="row" data-row><span class="chev"></span><svg class="file-ico"><use href="#i-file"/></svg><span class="name">tsconfig.json</span></div>
+
+          <div class="row excluded" data-toggle="g-nm"><svg class="chev ic"><use href="#i-chev"/></svg><svg class="file-ico"><use href="#i-folder"/></svg><span class="name">node_modules</span><span class="tag"><span class="st u">已排除</span></span></div>
+          <div class="group" data-group="g-nm" hidden>
+            <div class="row excluded" style="padding-left:24px" data-row><span class="chev"></span><svg class="file-ico"><use href="#i-file"/></svg><span class="name">（不参与同步）</span></div>
+          </div>
+        </div>
+
+        <div class="peek">
+          <div class="peek-head">
+            <span class="st m">M</span>
+            <span class="peek-path" id="peekPath">src/app/main.ts</span>
+            <span class="peek-meta" id="peekMeta">2.4 KB · 待上传</span>
+          </div>
+          <pre class="code" id="peekCode"><span class="k">import</span> { createServer } <span class="k">from</span> <span class="s">'node:http'</span>
+<span class="k">import</span> { loadConfig } <span class="k">from</span> <span class="s">'./config.js'</span>
+
+<span class="k">const</span> cfg = loadConfig()  <span class="c">// port 8080</span></pre>
+          <div class="peek-acts">
+            <button class="btn sm primary" onclick="toast('已上传 · 远端 mtime 已对齐')"><svg class="ic"><use href="#i-up"/></svg>上传</button>
+            <button class="btn sm" onclick="toast('已下载到本地映射目录')"><svg class="ic"><use href="#i-down"/></svg>下载</button>
+            <button class="btn sm" onclick="toast('已在 better-sidebar 编辑器中打开本地镜像')"><svg class="ic"><use href="#i-ext"/></svg>编辑器打开</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───── 终端 ───── -->
+      <section class="pane" data-pane="terminal">
+        <div class="ttabs">
+          <button class="ttab" aria-selected="true"><span class="dot on" style="width:5px;height:5px;box-shadow:none"></span>zsh — prod-web-01<span class="x">×</span></button>
+          <button class="ttab"><span class="dot on" style="width:5px;height:5px;box-shadow:none"></span>zsh — tmux<span class="x">×</span></button>
+          <button class="icon-btn" style="width:22px;height:22px;margin-left:auto" title="新建终端" onclick="toast('新终端：复用同一 SSH 连接')"><svg class="ic"><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="term-status">
+          <span class="dot on" style="width:5px;height:5px;box-shadow:none"></span>
+          <span>ssh · xterm-256color · 102×32 · UTF-8</span>
+          <span style="margin-left:auto">18ms</span>
+        </div>
+        <div class="term-wrap">
+          <div class="term" id="term" tabindex="0">
+<span class="t-dim">Last login: Wed Nov  4 16:20:11 2026 from 10.0.3.1</span>
+<span class="t-green">ubuntu@prod-web-01</span>:<span class="t-blue">/srv/app</span> $ tmux new -A -s dsh
+<span class="t-dim">[exited]</span>
+<span class="t-green">ubuntu@prod-web-01</span>:<span class="t-blue">/srv/app</span> $ git status -s
+<span class="t-amber"> M</span> src/app/main.ts
+<span class="t-amber"> M</span> src/index.ts
+<span class="t-green">??</span> dist/
+<span class="t-green">ubuntu@prod-web-01</span>:<span class="t-blue">/srv/app</span> $ npm test -- --watch=false
+
+<span class="t-violet">RUNS</span>  tests/app.spec.ts
+  <span class="t-green">✓</span> 启动服务并监听 8080 <span class="t-dim">(38ms)</span>
+  <span class="t-green">✓</span> 路由回退到 index.html <span class="t-dim">(4ms)</span>
+  <span class="t-green">✓</span> 配置缺失时使用默认值 <span class="t-dim">(2ms)</span>
+
+<span class="t-green">Test Files</span>  1 passed (1)
+<span class="t-green">Tests</span>       3 passed (3)
+<span class="t-dim">Duration</span>    1.42s
+
+<span class="t-green">ubuntu@prod-web-01</span>:<span class="t-blue">/srv/app</span> $ <span id="typed"></span><span class="caret"></span>
+</div>
+          <div class="hintbar">
+            <span><kbd>⌘K</kbd> 清屏</span>
+            <span><kbd>⌘⇧V</kbd> 粘贴</span>
+            <span style="margin-left:auto">进程存活由远端 tmux 保底</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───── 同步 ───── -->
+      <section class="pane" data-pane="sync">
+        <div class="scroll">
+          <div class="card">
+            <div class="card-h"><svg class="ic"><use href="#i-link"/></svg><b>路径映射</b><span style="margin-left:auto">~/WorkBuddy/app ⇄ /srv/app</span></div>
+            <div class="card-b">
+              <div class="map-row">
+                <span class="path" title="C:\Users\Administrator\WorkBuddy\app">~/WorkBuddy/app</span>
+                <span class="arrow"><svg class="ic" style="width:12px;height:12px"><use href="#i-up"/></svg><svg class="ic" style="width:12px;height:12px"><use href="#i-down"/></svg></span>
+                <span class="path" title="/srv/app">/srv/app</span>
+                <button class="icon-btn" style="width:22px;height:22px;margin-left:auto" title="编辑映射" onclick="toast('打开映射编辑器')"><svg class="ic" style="width:12px;height:12px"><use href="#i-cog"/></svg></button>
+              </div>
+              <div style="margin-top:9px" class="seg" id="policySeg">
+                <button aria-selected="false">关闭</button>
+                <button aria-selected="true">保存时上传</button>
+                <button aria-selected="false">全部变更</button>
+              </div>
+              <div class="hint" style="justify-content:flex-start;margin-top:8px">排除 <code style="font-family:var(--mono)">node_modules · .git · dist</code>，单文件上限 8 MB</div>
+            </div>
+          </div>
+
+          <div class="conflict">
+            <div class="conflict-h"><svg class="ic" style="width:12px;height:12px"><use href="#i-warn"/></svg>1 处冲突待处理</div>
+            <p><code style="font-family:var(--mono)">config/db.yml</code> 本地与远端都被修改过（本地 16:04 / 远端 15:58）。</p>
+            <div class="acts">
+              <button class="btn sm" onclick="resolveConflict(this,'已保留本地版本并上传')">保留本地</button>
+              <button class="btn sm" onclick="resolveConflict(this,'已拉取远端版本到本地')">保留远端</button>
+              <button class="btn sm ghost" onclick="toast('打开并排对比视图')">对比</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><svg class="ic"><use href="#i-sync"/></svg><b>传输队列</b><span class="count" style="margin-left:4px">3</span>
+              <button class="btn ghost sm" style="margin-left:auto" onclick="toast('已暂停队列')">暂停</button>
+            </div>
+            <div class="qitem" style="position:relative"><span class="qico up"><svg class="ic" style="width:11px;height:11px"><use href="#i-up"/></svg></span><span class="qname">src/app/main.ts</span><span class="qstate" style="color:var(--green)">已上传 42ms</span></div>
+            <div class="qitem" style="position:relative"><span class="qico up"><svg class="ic" style="width:11px;height:11px"><use href="#i-up"/></svg></span><span class="qname">src/index.ts</span><span class="qstate" id="q1">上传中 64%</span><span class="qbar" id="qb1" style="width:64%"></span></div>
+            <div class="qitem" style="position:relative"><span class="qico off"><svg class="ic" style="width:11px;height:11px"><use href="#i-x"/></svg></span><span class="qname">dist/bundle.js</span><span class="qstate">已排除 · 不传输</span></div>
+            <div class="stat">
+              <span>本次 <b>18</b> 文件</span>
+              <span><b>1.2 MB</b></span>
+              <span>均 <b>38ms</b></span>
+              <span style="margin-left:auto">SFTP · 复用 1 条连接</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h"><svg class="ic"><use href="#i-lock"/></svg><b>安全</b></div>
+            <div class="card-b" style="padding-top:2px">
+              <div class="switch">
+                <div><div class="lbl">生产主机二次确认</div><div class="sub">写操作前要求确认，批量脚本自动暂停</div></div>
+                <button class="sw" aria-checked="true" onclick="toggleSw(this)"></button>
+              </div>
+              <div class="switch">
+                <div><div class="lbl">上传前写临时文件再 mv</div><div class="sub">避免远端进程读到半截文件</div></div>
+                <button class="sw" aria-checked="true" onclick="toggleSw(this)"></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───── 设置 ───── -->
+      <section class="pane" data-pane="settings">
+        <div class="scroll">
+          <div class="sect">连接</div>
+          <div class="form">
+            <div class="field"><label>名称</label><input value="prod-web-01" /></div>
+            <div class="grid2">
+              <div class="field"><label>主机</label><input value="10.0.3.21" /></div>
+              <div class="field"><label>端口</label><input value="22" /></div>
+            </div>
+            <div class="grid2">
+              <div class="field"><label>用户</label><input value="ubuntu" /></div>
+              <div class="field"><label>认证</label>
+                <select><option>密钥文件</option><option>ssh-agent</option><option>密码</option></select>
+              </div>
+            </div>
+            <div class="field"><label>私钥</label><input value="~/.ssh/id_ed25519" /></div>
+            <div class="field"><label>ProxyJump（来自 ssh config）</label><input value="bastion.internal" /></div>
+          </div>
+
+          <div class="sect">路径映射</div>
+          <div class="card" style="margin-bottom:6px">
+            <div class="qitem"><span class="qname">~/WorkBuddy/app → /srv/app</span><span class="qstate">双向</span>
+              <button class="icon-btn" style="width:22px;height:22px" onclick="toast('已移除映射')"><svg class="ic" style="width:12px;height:12px"><use href="#i-x"/></svg></button>
+            </div>
+            <div class="qitem"><span class="qname">~/data/fixtures → /srv/shared/fixtures</span><span class="qstate">仅下载</span>
+              <button class="icon-btn" style="width:22px;height:22px" onclick="toast('已移除映射')"><svg class="ic" style="width:12px;height:12px"><use href="#i-x"/></svg></button>
+            </div>
+          </div>
+          <button class="btn sm" onclick="toast('新增一行映射')"><svg class="ic"><use href="#i-plus"/></svg>新增映射</button>
+
+          <div class="sect">行为</div>
+          <div class="card"><div class="card-b" style="padding-top:2px">
+            <div class="switch">
+              <div><div class="lbl">连接后自动打开终端</div><div class="sub">并在远端执行 tmux new -A -s dsh</div></div>
+              <button class="sw" aria-checked="true" onclick="toggleSw(this)"></button>
+            </div>
+            <div class="switch">
+              <div><div class="lbl">在 better-sidebar 注册 Tab</div><div class="sub">文件 / 终端 / 同步 三个入口</div></div>
+              <button class="sw" aria-checked="true" onclick="toggleSw(this)"></button>
+            </div>
+            <div class="switch">
+              <div><div class="lbl">复用 ssh config 的 ControlMaster</div><div class="sub">多窗口共享一条连接，冷启动约 8ms</div></div>
+              <button class="sw" aria-checked="false" onclick="toggleSw(this)"></button>
+            </div>
+          </div></div>
+
+          <div style="display:flex;gap:8px;margin:14px 0 20px">
+            <button class="btn primary" style="flex:1" onclick="toast('设置已保存')">保存</button>
+            <button class="btn" onclick="toast('已测试连接 · 18ms')">测试连接</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ───── 错误 ───── -->
+      <section class="pane" data-pane="error">
+        <div class="center">
+          <div class="big-ico" style="background:var(--red-soft);color:var(--red)"><svg class="ic" style="width:20px;height:20px"><use href="#i-warn"/></svg></div>
+          <h2>认证失败</h2>
+          <p>密钥被拒绝，可能是密钥未加入远端 authorized_keys，或主机指纹已变更。</p>
+          <div class="err-box">
+            <div class="t"><svg class="ic" style="width:12px;height:12px"><use href="#i-warn"/></svg>Permission denied (publickey)</div>
+            <code>identity: ~/.ssh/id_ed25519 · host key: SHA256:9x2f…7ab</code>
+          </div>
+          <div style="display:flex;gap:6px;width:100%">
+            <button class="btn primary" style="flex:1" onclick="setView('connecting')">重试</button>
+            <button class="btn" style="flex:1" onclick="toast('切换到密码认证')">改用密码</button>
+            <button class="btn ghost" onclick="toast('打开诊断日志')">日志</button>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <div class="p-foot">
+      <span><span class="dot on" style="display:inline-block;vertical-align:0;margin-right:5px;box-shadow:none"></span><b>已连接</b></span>
+      <span class="sep"></span>
+      <span>映射 <b>1</b></span>
+      <span class="sep"></span>
+      <span>队列 <b>2</b></span>
+      <span style="margin-left:auto;display:flex;align-items:center;gap:5px">
+        <svg class="ic" style="width:11px;height:11px"><use href="#i-link"/></svg>better-sidebar 0.28
+      </span>
+    </div>
+
+    <div class="toast" id="toast"></div>
+  </aside>
+</main>
+
+<script>
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+  /* 顶部状态切换 */
+  function setView(name) {
+    $$('.views button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === name)));
+    const paneOf = { connect: 'connect', connecting: 'connecting', files: 'files', terminal: 'terminal', sync: 'sync', settings: 'settings', error: 'error' }[name];
+    $$('.pane').forEach(p => p.dataset.active = String(p.dataset.pane === paneOf));
+    $$('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.pane === paneOf)));
+    /* 头部状态跟随 */
+    const dot = $('#hostDot'), meta = $('#hostMeta');
+    if (name === 'connecting') { dot.className = 'dot warn pulse'; meta.textContent = '正在建立连接…'; }
+    else if (name === 'error') { dot.className = 'dot err'; meta.textContent = '连接失败 · Permission denied'; }
+    else if (name === 'connect') { dot.className = 'dot'; meta.textContent = '未连接'; }
+    else { dot.className = 'dot on'; meta.textContent = 'ubuntu@10.0.3.21:22 · Ubuntu 22.04 · 18ms'; }
+  }
+  $$('.views button').forEach(b => b.addEventListener('click', () => setView(b.dataset.view)));
+  $$('.tabs button').forEach(b => b.addEventListener('click', () => setView(b.dataset.pane)));
+
+  /* 折叠 */
+  $$('[data-toggle]').forEach(row => {
+    row.addEventListener('click', () => {
+      const group = $(`[data-group="${row.dataset.toggle}"]`);
+      if (!group) return;
+      const open = !group.hidden;
+      group.hidden = open;
+      row.classList.toggle('open', !open);
+    });
+  });
+
+  /* 文件选中 → 更新预览条 */
+  $$('[data-file]').forEach(row => {
+    row.addEventListener('click', () => {
+      $$('[data-file]').forEach(r => r.removeAttribute('aria-selected'));
+      row.setAttribute('aria-selected', 'true');
+      $('#peekPath').textContent = row.dataset.file;
+      $('#peekMeta').textContent = row.dataset.meta;
+      const html = row.dataset.lines.split('|').map(line => {
+        const [num, ...rest] = line.split(' ');
+        return `<span class="c">${num.padStart(2, ' ')}</span>  ${rest.join(' ')}`;
+      }).join('\n');
+      $('#peekCode').innerHTML = html;
+    });
+  });
+
+  /* 主题 */
+  $('#themeBtn').addEventListener('click', () => {
+    const html = document.documentElement;
+    html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+  });
+
+  /* 开关 */
+  function toggleSw(el) { el.setAttribute('aria-checked', el.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); }
+
+  /* 分段控件 */
+  $$('#policySeg button').forEach(b => b.addEventListener('click', () => {
+    $$('#policySeg button').forEach(x => x.setAttribute('aria-selected', 'false'));
+    b.setAttribute('aria-selected', 'true');
+    toast(`同步策略：${b.textContent}`);
+  }));
+
+  /* toast */
+  let toastTimer;
+  function toast(msg) {
+    const el = $('#toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 1900);
+  }
+
+  /* 冲突处理 */
+  function resolveConflict(btn, msg) {
+    const box = btn.closest('.conflict');
+    box.style.transition = 'opacity .18s, transform .18s';
+    box.style.opacity = '0';
+    box.style.transform = 'translateY(-4px)';
+    setTimeout(() => box.remove(), 190);
+    toast(msg);
+  }
+
+  /* 终端：点击后可输入，回车回显 */
+  const term = $('#term'), typed = $('#typed');
+  let buf = '';
+  term.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const cmd = buf;
+      buf = '';
+      typed.textContent = '';
+      const line = document.createElement('div');
+      line.className = 't-cmd';
+      line.innerHTML = `<span class="t-green">ubuntu@prod-web-01</span>:<span class="t-blue">/srv/app</span> $ ${escapeHtml(cmd)}`;
+      term.insertBefore(line, term.lastElementChild);
+      if (cmd.trim()) {
+        const out = document.createElement('div');
+        out.className = 't-dim';
+        out.textContent = `↳ 已发送到远端 pty · 回显演示（${cmd.trim().split(' ')[0]}）`;
+        term.insertBefore(out, term.lastElementChild);
+      }
+      term.scrollTop = term.scrollHeight;
+      term.focus();
+      return;
+    }
+    if (e.key === 'Backspace') { e.preventDefault(); buf = buf.slice(0, -1); typed.textContent = buf; return; }
+    if (e.key.length === 1) { buf += e.key; typed.textContent = buf; }
+  });
+  term.addEventListener('click', () => term.focus());
+  function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+  /* 队列进度演示 */
+  let pct = 64;  setInterval(() => {
+    pct = pct >= 100 ? 8 : pct + 4;
+    const bar = $('#qb1'), label = $('#q1');
+    if (!bar || !label) return;
+    bar.style.width = pct + '%';
+    label.textContent = pct >= 100 ? '已上传 31ms' : `上传中 ${pct}%`;
+    if (pct >= 100) label.style.color = 'var(--green)';
+  }, 900);
+
+  /* ?view=terminal|sync|settings|connect|connecting|error 直接打开某个状态 */
+  const initial = new URLSearchParams(location.search).get('view');
+  if (initial) setView(initial);
+
+  /* 初始选中文件的预览（补上行号） */
+  const preset = $('[data-file][aria-selected="true"]');
+  if (preset) preset.click();
+</script>
+</body>
+</html>
