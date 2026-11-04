@@ -260,7 +260,7 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 | M2 | SFTP 树 + 预览 + 上下载 + 原子写 | 远端 10 万文件目录不卡死 |
 | M3 | 映射 + 监听 + 队列 + 冲突 | 改一个文件 300ms 内到远端，冲突能拦 |
 | M4 | better-sidebar 深度联动 + 设置页 + 多主机 | 从远端文件一键跳到本地编辑器 |
-| M5 | 端口转发 / 远端搜索 | — |
+| M5 | 端口转发（`-L`）✅ / 远端搜索 | — |
 | 实验 | 执行世界替换（`ctx.fs` + `ctx.subprocess`） | 独立 profile，agent 全程在远端 |
 
 ---
@@ -288,15 +288,18 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 | 上传下载、目录树、mode 映射 | `src/remote/transfer.js` |
 | 映射、排除规则、glob 匹配 | `src/sync/mapping.js` |
 | 监听、去抖、冲突判定、队列 | `src/sync/engine.js` |
+| 端口转发（监听、direct-tcpip、生命周期） | `src/forward/manager.js` |
 | 终端桥（WS ⇄ SSH PTY + tmux 判定） | `src/ws/term.js` |
 | 状态持久化（密码不落盘） | `src/store.js` |
 | 客户端三个标签页 | `client/index.js`、`client/*-view.js` |
 
-### 8.2 两个只有真跑起来才会发现的坑
+### 8.2 三个踩过的坑
 
 1. **`ctx` 是 Proxy，不是对象**。访问未在 `inject` 里声明的服务会抛 `cannot get property "x" without inject`。我在 `system.ping` 里读了 `ctx.pluginVersion`，单测用的假 ctx 是普通对象所以全绿，真 profile 里直接 500。修法：版本从插件自身传入（`buildApi({ version })`），并且把单测的假 ctx 也换成同样会抛错的 Proxy —— 这类 bug 只有让测试环境同样严格才防得住。
 
 2. **`registerTab` 对重复 id 会 `throw`**（`[dsh-better-sidebar] tab type "x" already registered`），且它的返回值才是 disposer。HMR 在旧 effect 销毁前重跑 `apply` 就会炸掉整个面板。修法：注册前用 `service.getTab(id)` 判断，已存在就跳过；`ctx.effect(() => service.registerTab(...))` 保留返回的 disposer。
+
+3. **测试会悄悄跑在旧产物上。** 客户端代码写错时 `build.mjs` 失败，但 `npm test` 照样读上一次的 `lib/client.js` 全绿 —— 改完代码却看到绿灯，比红灯危险得多。修法：`package.json` 加 `"pretest": "node build.mjs"`，npm 会在 `test` 前自动跑，构建失败即中止。
 
 ### 8.3 tmux 判定位置
 
@@ -309,6 +312,8 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 | `test/smoke.mjs` | 路由注册、主机增删、映射归一化、落盘无密码、排除规则、终端帧、未声明服务访问会抛错 | `node test/smoke.mjs` |
 | `test/ssh.mjs` | 握手、密码认证、exec、PTY、TOFU 记录、改指纹报 `host-key-changed`、错密码报 `auth-failed`、连接复用 | `node test/ssh.mjs` |
 | `test/files.mjs` | 列表排序、二进制/超大/陈旧守卫、原子写不留临时文件、mkdir 递归、rename、递归删除 | `node test/files.mjs` |
+| `test/forward.mjs` | 真实 TCP 往返穿过 `direct-tcpip`、字节统计、同端口判重、端口被占、停止后拒绝连接、autoStart 语义、规则持久化无密码 | `node test/forward.mjs` |
+| `test/render.mjs` | 用真实 React `renderToString` 渲染四个面板，捕捉只在渲染期暴露的错误 | `node test/render.mjs` |
 | `test/bundle-check.html` | 真实浏览器加载 bundle：三个标签页、顺序 46/47/48、title/icon 函数解析、重复挂载幂等、卸载后清空、无 better-sidebar 时静默 | `chrome --headless=new --dump-dom …` |
 | `test/e2e-profile.mjs` | 真实 DSH profile 内：路由挂载、cookie 准入、两条终端分支、PTY 往返、resize 不断连 | 见 README |
 | `scripts/check-ssh.mjs` | 真实服务器：连接、UTF-8 读写、上传下载字节一致 | `node scripts/check-ssh.mjs` |
@@ -316,7 +321,15 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 ### 8.5 还没做的（有意留白）
 
 - **执行世界替换（A 路线）**：`ctx.fs` / `ctx.subprocess` 换成远端实现，让 agent 全程在远端跑。前提是先让 better-sidebar 也不再直读本地，否则 split-brain。
-- **端口转发（`-L`）**：ssh2 支持，但 UI 与生命周期（占用冲突、断线重放）没设计完。
 - **远端搜索**：希望走远端 `rg` 而不是拉文件回来本地搜。
 - **断点续传**：大文件目前是整包 `fastPut`，中断即重来。
+- **端口转发的进阶能力**：`socks5` 动态转发、`-R` 反向转发都没做；目前只有 `-L`。
+
+### 8.6 端口转发的三个取舍
+
+1. **默认绑回环，公开绑定要显式选且会被标红。** 把数据库端口转到 `0.0.0.0` 等于把它接到咖啡厅的 Wi-Fi 上；默认值必须是安全的那个，危险动作必须多一次选择，并且在界面上一直可见（`exposed` 字段一路传到面板顶部横幅）。
+
+2. **监听器比连接活得久。** SSH 掉线时不拆监听器 —— 池子会在下一条入站连接到达时惰性重连，所以用户的浏览器刷新两次不至于让隧道永久失效。代价是池子要在内存里留一份凭据（`#secrets`）：只存在于进程内，显式 `close()` 或插件卸载即清除，且状态文件里永远只有 `auth.type`。
+
+3. **错误要分清「远端服务没起」和「SSH 断了」。** 前者是 `target-refused`（服务本身的问题，改远端），后者是传输层错误（改网络或认证）。混成一个「转发失败」，用户就不知道该去修哪一头。
 

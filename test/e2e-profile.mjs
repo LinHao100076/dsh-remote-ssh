@@ -3,17 +3,18 @@
  *
  * Runs the plugin inside a real DSH profile rather than a fake context, so it
  * covers what unit tests cannot: route mounting behind the gateway's admission
- * fence, cookies on the WebSocket upgrade, and both terminal branches against a
- * real PTY — plain login shell when tmux is missing, `tmux new -A` when it is
- * present. The fake SSH server reports tmux via the `files.info()` probe and
- * records every command it is asked to run.
+ * fence, cookies on the WebSocket upgrade, both terminal branches against a real
+ * PTY, and a port forward driven entirely through the HTTP API. The fake SSH
+ * server reports tmux via the `files.info()` probe, records every command it is
+ * asked to run, and accepts `direct-tcpip` so the tunnel has somewhere to land.
  *
- * Prereqs: a booted profile on :4987 and a cookie jar.
+ * Prereqs: a booted profile and a cookie jar.
  * Run: `RS_COOKIE_JAR=... node test/e2e-profile.mjs`
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { generateKeyPairSync } from 'node:crypto'
+import { createServer as createNetServer, connect as netConnect } from 'node:net'
 import ssh2 from 'ssh2'
 import WebSocket from 'ws'
 
@@ -32,8 +33,9 @@ const { privateKey } = generateKeyPairSync('rsa', {
 })
 
 /** Boot a fake ssh2 host; `tmux` decides what the info probe reports. */
-async function startHost({ tmux }) {
+async function startHost({ tmux, allowForward = false }) {
   const commands = []
+  const forwarded = []
   const server = new ssh2.Server({ hostKeys: [privateKey] }, (client) => {
     client.on('error', () => {})
     client.on('authentication', (auth) => {
@@ -62,10 +64,22 @@ async function startHost({ tmux }) {
           stream.on('data', (chunk) => stream.write(`echo:${chunk.toString()}`))
         })
       })
+
+      // direct-tcpip: the server side of an `ssh -L` tunnel.
+      if (allowForward) {
+        client.on('tcpip', (accept, reject, info) => {
+          forwarded.push(`${info.destIP}:${info.destPort}`)
+          const stream = accept()
+          const upstream = netConnect({ port: info.destPort, host: info.destIP })
+          upstream.on('connect', () => { stream.pipe(upstream).pipe(stream) })
+          upstream.on('error', () => { stream.close?.() })
+          stream.on('error', () => {})
+        })
+      }
     })
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-  return { server, port: server.address().port, commands }
+  return { server, port: server.address().port, commands, forwarded }
 }
 
 async function api(method, payload = {}) {
@@ -162,5 +176,78 @@ second.ws.close()
 await api('hosts.delete', { hostId: second.hostId })
 withTmux.server.close()
 
-console.log('e2e: ok (mount, auth gate, both terminal branches, pty round-trip, resize)')
+/* ── branch 3: port forward, created and started over HTTP ─────────────── */
+
+// A real TCP service standing in for "the remote's Redis".
+const echoService = createNetServer((socket) => {
+  socket.on('error', () => {})
+  socket.on('data', (chunk) => socket.write(`echo:${chunk}`))
+})
+await new Promise((resolve) => echoService.listen(0, '127.0.0.1', resolve))
+const echoPort = echoService.address().port
+
+// Ask the OS for a free local port, then release it for the plugin to claim.
+const probe = createNetServer()
+await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve))
+const localPort = probe.address().port
+await new Promise((resolve) => probe.close(resolve))
+
+const tunnelHost = await startHost({ tmux: false, allowForward: true })
+const savedTunnel = await api('hosts.save', {
+  host: { host: '127.0.0.1', port: tunnelHost.port, user: 'u', name: 'e2e-forward', auth: { type: 'password' } },
+})
+const tunnelHostId = savedTunnel.body.value.host.id
+const tunnelConnected = await api('hosts.connect', { hostId: tunnelHostId, auth: { type: 'password', password: 'p' } })
+assert.equal(tunnelConnected.status, 200, `hosts.connect: ${JSON.stringify(tunnelConnected.body)}`)
+
+const savedRule = await api('forward.save', {
+  hostId: tunnelHostId,
+  rule: { localPort, remoteHost: '127.0.0.1', remotePort: echoPort },
+})
+assert.equal(savedRule.status, 200, `forward.save: ${JSON.stringify(savedRule.body)}`)
+const ruleId = savedRule.body.value.rules[0].id
+assert.equal(savedRule.body.value.rules[0].state, 'stopped')
+
+const startedRule = await api('forward.start', { hostId: tunnelHostId, ruleId })
+assert.equal(startedRule.status, 200, `forward.start: ${JSON.stringify(startedRule.body)}`)
+assert.equal(startedRule.body.value.rules[0].state, 'listening')
+console.log('forward:', `127.0.0.1:${localPort} -> 127.0.0.1:${echoPort}`)
+
+// The proof: a plain TCP round-trip through the listener the plugin bound.
+const tunnelled = await new Promise((resolve, reject) => {
+  const socket = netConnect({ port: localPort, host: '127.0.0.1' })
+  const timer = setTimeout(() => { socket.destroy(); reject(new Error('tunnel timed out')) }, 5000)
+  socket.on('connect', () => socket.write('through-the-gateway'))
+  socket.on('data', (chunk) => { clearTimeout(timer); socket.end(); resolve(chunk.toString()) })
+  socket.on('error', (error) => { clearTimeout(timer); reject(error) })
+})
+assert.equal(tunnelled, 'echo:through-the-gateway', 'bytes must traverse listener → direct-tcpip → service')
+assert.ok(tunnelHost.forwarded.some((target) => target.endsWith(`:${echoPort}`)), 'the SSH server must see a direct-tcpip')
+
+await new Promise((resolve) => setTimeout(resolve, 120))
+const listed = await api('forward.list', { hostId: tunnelHostId })
+const listedRule = listed.body.value.hosts[0].rules[0]
+assert.equal(listedRule.state, 'listening')
+assert.ok(listedRule.bytes > 0, 'traffic is counted for the panel')
+
+const stoppedRule = await api('forward.stop', { hostId: tunnelHostId, ruleId })
+assert.equal(stoppedRule.body.value.rules[0].state, 'stopped')
+await assert.rejects(
+  () => new Promise((resolve, reject) => {
+    const socket = netConnect({ port: localPort, host: '127.0.0.1' })
+    socket.on('connect', () => { socket.destroy(); resolve() })
+    socket.on('error', reject)
+  }),
+  'a stopped rule must release the port',
+)
+
+await api('forward.remove', { hostId: tunnelHostId, ruleId })
+const afterRemove = await api('forward.list', { hostId: tunnelHostId })
+assert.equal(afterRemove.body.value.hosts[0].rules.length, 0)
+
+await api('hosts.delete', { hostId: tunnelHostId })
+tunnelHost.server.close()
+echoService.close()
+
+console.log('e2e: ok (mount, auth gate, both terminal branches, pty round-trip, resize, forward through the gateway)')
 process.exit(0)

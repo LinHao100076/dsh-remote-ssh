@@ -143,6 +143,49 @@ result = await callApi(apiRoute, 'sync.list', { sessionId: 's1' })
 assert.equal(result.payload.value.mappings.length, 1)
 assert.equal(result.payload.value.mappings[0].watching, true, 'watcher starts for a push mapping')
 
+/* ── port forwarding: rules, defaults, validation ─────────────────────── */
+
+result = await callApi(apiRoute, 'forward.list')
+assert.deepEqual(result.payload.value, { hosts: [] }, 'no rules yet')
+
+result = await callApi(apiRoute, 'forward.save', { hostId, rule: { localPort: 0, remotePort: 80 } })
+assert.equal(result.payload.error.code, 'bad-port', 'a rule needs a real port')
+
+result = await callApi(apiRoute, 'forward.save', { hostId: 'nope', rule: { localPort: 8080, remotePort: 80 } })
+assert.equal(result.payload.error.code, 'host-missing')
+
+result = await callApi(apiRoute, 'forward.save', {
+  hostId,
+  rule: { localPort: 18080, remotePort: 3000, note: 'dev server' },
+})
+assert.equal(result.payload.ok, true, 'saving a rule succeeds')
+const savedRule = result.payload.value.rules[0]
+assert.equal(savedRule.bind, '127.0.0.1', 'rules bind loopback unless told otherwise')
+assert.equal(savedRule.autoStart, true)
+assert.equal(savedRule.state, 'stopped', 'saving does not start the listener')
+assert.equal(savedRule.exposed, false)
+assert.equal(savedRule.remoteHost, '127.0.0.1', 'the target host defaults to loopback')
+
+result = await callApi(apiRoute, 'forward.save', {
+  hostId,
+  rule: { localPort: 18080, remotePort: 5432, bind: '0.0.0.0' },
+})
+assert.equal(result.payload.ok, true, 'a public bind is allowed separately from the loopback one')
+
+result = await callApi(apiRoute, 'forward.save', {
+  hostId,
+  rule: { localPort: 18080, remotePort: 6379 },
+})
+assert.equal(result.payload.error.code, 'duplicate-port', 'the same local port cannot be claimed twice')
+assert.match(result.payload.error.message, /已被另一条规则/)
+
+result = await callApi(apiRoute, 'forward.list', { hostId })
+assert.equal(result.payload.value.hosts[0].rules.length, 2)
+assert.equal(result.payload.value.hosts[0].hostName, '10.0.3.21')
+
+result = await callApi(apiRoute, 'forward.remove', { hostId, ruleId: savedRule.id })
+assert.equal(result.payload.value.rules.length, 1)
+
 /* ── error + method routing ───────────────────────────────────────────── */
 
 result = await callApi(apiRoute, 'nope.method')
@@ -161,6 +204,7 @@ const state = JSON.parse(await readFile(storePath, 'utf8'))
 assert.equal(state.hosts.length, 1)
 assert.equal(state.hosts[0].auth.password, undefined, 'no password on disk')
 assert.equal(state.mappings.s1.length, 1)
+assert.equal(state.forwards[hostId].length, 1, 'forward rules survive a reload')
 
 /* ── pure helpers ─────────────────────────────────────────────────────── */
 
@@ -243,7 +287,7 @@ const withoutTmux = await runTerminal({ tmux: false })
 assert.equal(withoutTmux.command, undefined, 'no tmux means a plain login shell')
 assert.match(withoutTmux.sent.find((frame) => frame.t === 'ready').warning, /tmux/)
 
-console.log('smoke: ok (routes, hosts, mappings, persistence, matcher, terminal)')
+console.log('smoke: ok (routes, hosts, mappings, forwards, persistence, matcher, terminal)')
 
 /* Watchers keep the loop alive; unmount like the host would, then exit. */
 for (const dispose of disposers) {

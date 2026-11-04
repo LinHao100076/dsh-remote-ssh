@@ -32,7 +32,7 @@ export function sessionCwd(ctx, sessionId, fallback) {
  * proxy that throws `cannot get property "x" without inject` for anything not
  * listed in the plugin's `inject`, which a plain-object test context hides.
  */
-export function buildApi({ ctx, store, pool, files, transfer, engine, version = '0.0.0' }) {
+export function buildApi({ ctx, store, pool, files, transfer, engine, forward, version = '0.0.0' }) {
   /** Stored host row, or a transient one built from a draft. */
   function hostOf(payload, { allowDraft = false } = {}) {
     if (allowDraft && payload.draft !== undefined && payload.draft !== null) {
@@ -111,12 +111,18 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, version = 
       }
       await store.upsertHost(row)
       const existing = store.host(row.id)
-      if (existing !== undefined) pool.close(existing.id)
+      if (existing !== undefined) {
+        // The row changed, so the tunnel may point at a different server: close
+        // the listeners before the connection they ride on is dropped.
+        await forward.stopHost(row.id)
+        pool.close(existing.id)
+      }
       return { host: store.host(row.id), hosts: store.hosts() }
     },
 
     'hosts.delete': async (payload) => {
       const hostId = requireString(payload, 'hostId')
+      await forward.stopHost(hostId)
       pool.close(hostId)
       await store.deleteHost(hostId)
       return { hosts: store.hosts() }
@@ -129,11 +135,16 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, version = 
       if (payload.persistLastUsed === true) {
         await store.upsertHost({ id: host.id, lastUsedAt: Date.now() })
       }
-      return { hostId: host.id, status: 'connected', info }
+      // Listeners cannot survive a plugin restart, so autoStart rules follow the
+      // connection that just came up. A failing rule is reported per rule, never
+      // as a failed connect.
+      const forwards = await forward.startAll(host.id)
+      return { hostId: host.id, status: 'connected', info, forwards }
     },
 
     'hosts.disconnect': async (payload) => {
       const hostId = requireString(payload, 'hostId')
+      await forward.stopHost(hostId)
       pool.close(hostId)
       files.forget(hostId)
       return { hostId, status: 'disconnected' }
@@ -277,6 +288,37 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, version = 
       const choice = ['local', 'remote', 'skip'].includes(payload.choice) ? payload.choice : 'skip'
       return engine.resolve(sessionId, key, choice)
     },
+
+    /* ── port forwarding ─────────────────────────────────────────────── */
+
+    'forward.list': async (payload) => {
+      const hostId = typeof payload.hostId === 'string' && payload.hostId !== '' ? payload.hostId : undefined
+      return { hosts: forward.list(hostId) }
+    },
+
+    'forward.save': async (payload) => {
+      const hostId = requireString(payload, 'hostId')
+      return forward.save(hostId, payload.rule ?? {})
+    },
+
+    'forward.remove': async (payload) => forward.remove(
+      requireString(payload, 'hostId'),
+      requireString(payload, 'ruleId'),
+    ),
+
+    'forward.start': async (payload) => forward.start(
+      requireString(payload, 'hostId'),
+      requireString(payload, 'ruleId'),
+    ),
+
+    'forward.stop': async (payload) => forward.stop(
+      requireString(payload, 'hostId'),
+      requireString(payload, 'ruleId'),
+    ),
+
+    'forward.startAll': async (payload) => forward.startAll(requireString(payload, 'hostId')),
+
+    'forward.stopAll': async (payload) => forward.stopAll(requireString(payload, 'hostId')),
 
     /* ── misc ──────────────────────────────────────────────────────── */
 

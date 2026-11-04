@@ -131,6 +131,15 @@ export const CSS = `
 .rs-q:last-child { border-bottom: 0; }
 .rs-q .rs-qname { font-family: var(--rs-mono); font-size: 10.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--rs-fg2); }
 .rs-q .rs-qstate { font-family: var(--rs-mono); font-size: 10px; color: var(--rs-fg3); flex: none; }
+
+/* Forward rule: addresses on one line, state and actions on the next — four
+   action buttons never fit beside two addresses in a 424px panel. */
+.rs-frow { padding: 6px 9px; border-bottom: 1px solid var(--rs-line); display: grid; gap: 5px; }
+.rs-frow:last-child { border-bottom: 0; }
+.rs-frow-l { display: flex; align-items: center; gap: 5px; min-width: 0; font-family: var(--rs-mono); font-size: 10.5px; }
+.rs-frow-l .rs-path { max-width: none; flex: 0 1 auto; }
+.rs-frow-r { display: flex; align-items: center; gap: 5px; }
+.rs-frow-meta { font-family: var(--rs-mono); font-size: 10px; color: var(--rs-fg3); white-space: nowrap; }
 .rs-empty { padding: 26px 18px; text-align: center; color: var(--rs-fg3); font-size: 11.5px; }
 .rs-empty h3 { margin: 0 0 4px; font-size: 12.5px; color: var(--rs-fg); font-weight: 600; }
 .rs-empty p { margin: 0 0 12px; line-height: 1.6; }

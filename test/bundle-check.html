@@ -87,6 +87,20 @@
       const ids = service.getTabs().map((tab) => tab.id).sort()
       const orders = service.getTabs().map((tab) => tab.order).sort((a, b) => a - b)
 
+      const fail = (message) => { throw new Error(message) }
+      const EXPECTED = [
+        'dsh-remote-ssh:files',
+        'dsh-remote-ssh:forward',
+        'dsh-remote-ssh:sync',
+        'dsh-remote-ssh:terminal',
+      ]
+      if (JSON.stringify(ids) !== JSON.stringify(EXPECTED)) {
+        fail(`tabs mismatch: ${JSON.stringify(ids)}`)
+      }
+      if (JSON.stringify(orders) !== JSON.stringify([46, 47, 48, 49])) {
+        fail(`tab order must be 46,47,48,49 — got ${JSON.stringify(orders)}`)
+      }
+
       /* 2. the descriptors must satisfy the contract the sidebar resolves:
             title/icon may be functions (textOf/iconOf call them), and the order
             decides the tab strip position. */
@@ -95,18 +109,25 @@
       const labels = service.getTabs().map((tab) => titleOf(tab.title))
       const icons = service.getTabs().map((tab) => (typeof tab.icon === 'function' ? tab.icon(16) : tab.icon))
       const components = service.getTabs().filter((tab) => typeof tab.component !== 'function')
+      if (labels.some((label) => typeof label !== 'string' || label === '')) fail(`bad labels: ${JSON.stringify(labels)}`)
+      if (icons.length !== 4) fail('every tab needs an icon')
+      if (components.length > 0) fail('every tab needs a component')
+      if (typeof filesTab !== 'object') fail('files tab missing')
 
       /* 3. a second mount (HMR re-apply) must not throw or duplicate */
       exports.apply(ctx)
       const afterSecond = service.getTabs().length
+      if (afterSecond !== 4) fail(`re-apply duplicated tabs: ${afterSecond}`)
 
       /* 4. and unlinking must leave nothing behind */
       for (const dispose of ctx.disposers) dispose()
       const afterDispose = service.getTabs().length
+      if (afterDispose !== 0) fail(`dispose left ${afterDispose} tabs behind`)
 
       /* 5. without better-sidebar the client must stay silent, not crash */
       const bare = makeCtx(undefined)
       exports.apply(bare)
+      if (bare.disposers.length !== 0) fail('nothing may be registered without the service')
 
       report({
         ok: true,
