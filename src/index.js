@@ -19,6 +19,7 @@ import { SshPool } from './ssh/pool.js'
 import { RemoteFiles } from './remote/files.js'
 import { Transfer } from './remote/transfer.js'
 import { SyncEngine } from './sync/engine.js'
+import { ForwardManager } from './forward/manager.js'
 import { buildApi, sessionCwd, toWireError } from './api.js'
 import { readJsonBody, writeError, writeOk, writeJson } from './wire.js'
 import { attachTerminal } from './ws/term.js'
@@ -30,7 +31,7 @@ export const name = 'dsh-remote-ssh'
 /** Routes, sessions and remote terminals need these services before mounting. */
 export const inject = ['webServer', 'sessions']
 
-const VERSION = '0.1.0'
+const VERSION = '0.2.0'
 
 /**
  * Mount the plugin.
@@ -53,8 +54,9 @@ export async function apply(ctx, config = {}) {
   const files = new RemoteFiles(pool)
   const transfer = new Transfer(pool, files)
   const engine = new SyncEngine({ pool, files, transfer, store })
+  const forward = new ForwardManager({ store, pool })
 
-  const api = buildApi({ ctx, store, pool, files, transfer, engine, version: VERSION })
+  const api = buildApi({ ctx, store, pool, files, transfer, engine, forward, version: VERSION })
 
   /** Same admission gate as the built-in `/api` gateway. */
   const admitted = (req) => {
@@ -120,6 +122,7 @@ export async function apply(ctx, config = {}) {
   ctx.effect(() => () => {
     for (const client of terminalWss.clients) client.terminate()
     terminalWss.close()
+    void forward.dispose()
     void engine.dispose()
     pool.dispose()
     void store.flush()

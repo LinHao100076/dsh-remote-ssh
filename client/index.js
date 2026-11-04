@@ -1,7 +1,7 @@
 /**
  * dsh-remote-ssh client half.
  *
- * Registers three sidebar tabs with `ctx.betterSidebar` and nothing else: all
+ * Registers four sidebar tabs with `ctx.betterSidebar` and nothing else: all
  * transport work happens in the host half. Registration runs inside
  * `ctx.inject(['betterSidebar'], …)`, so a profile without better-sidebar loads
  * this plugin without errors and simply shows no tabs — rather than leaving the
@@ -17,6 +17,7 @@ import xtermCss from '@xterm/xterm/css/xterm.css'
 import { CSS } from './styles.js'
 import { Icon } from './ui.js'
 import { FilesPane } from './files-view.js'
+import { ForwardPane } from './forward-view.js'
 import { SyncPane } from './sync-view.js'
 import { TerminalPane } from './terminal-view.js'
 
@@ -25,6 +26,18 @@ export const TABS = {
   files: 'dsh-remote-ssh:files',
   terminal: 'dsh-remote-ssh:terminal',
   sync: 'dsh-remote-ssh:sync',
+  forward: 'dsh-remote-ssh:forward',
+}
+
+/**
+ * Panel components, exposed so the render test can mount them without a real
+ * side-bar. Registering a tab is the only production use.
+ */
+export const PANES = {
+  files: FilesPane,
+  terminal: TerminalPane,
+  sync: SyncPane,
+  forward: ForwardPane,
 }
 
 /** Inject a stylesheet once per document. */
@@ -87,6 +100,15 @@ export function apply(ctx) {
       icon: tabIcon('sync'),
       order: 48,
       component: (props) => h(SyncPane, props),
+    })
+
+    mountTab(ctx, service, {
+      id: TABS.forward,
+      title: () => '转发',
+      description: '本地端口转发，把远端服务映射到本机',
+      icon: tabIcon('link'),
+      order: 49,
+      component: (props) => h(ForwardPane, props),
     })
   }
 

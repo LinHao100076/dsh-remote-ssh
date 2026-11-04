@@ -1,6 +1,7 @@
 /**
- * Plugin state on disk: configured hosts, per-session path mappings, and the
- * sync baseline (the last known state of both ends for each file).
+ * Plugin state on disk: configured hosts, per-session path mappings, the sync
+ * baseline (the last known state of both ends for each file), and the port
+ * forward rules per host.
  *
  * Hosts never carry a password or passphrase — the UI sends those with the
  * connect request and they live only in the pooling `Client`. What is stored is
@@ -12,7 +13,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { expandHome } from './ssh/paths.js'
 
-const EMPTY = { version: 1, hosts: [], mappings: {}, baselines: {} }
+const EMPTY = { version: 1, hosts: [], mappings: {}, baselines: {}, forwards: {} }
 
 export class Store {
   #state = structuredClone(EMPTY)
@@ -35,6 +36,7 @@ export class Store {
         hosts: Array.isArray(parsed.hosts) ? parsed.hosts : [],
         mappings: parsed.mappings ?? {},
         baselines: parsed.baselines ?? {},
+        forwards: parsed.forwards ?? {},
       }
     } catch {
       this.#state = structuredClone(EMPTY)
@@ -65,6 +67,7 @@ export class Store {
     for (const [sessionId, mappings] of Object.entries(this.#state.mappings)) {
       this.#state.mappings[sessionId] = mappings.filter((mapping) => mapping.hostId !== hostId)
     }
+    delete this.#state.forwards[hostId]
     this.touch()
   }
 
@@ -94,6 +97,26 @@ export class Store {
   /** Drop a baseline (file deleted or mapping removed). */
   dropBaseline(sessionId, key) {
     delete this.baselines(sessionId)[key]
+    this.touch()
+  }
+
+  /* ── port forwards ─────────────────────────────────────────────────── */
+
+  /** Forward rules configured for one host. */
+  forwards(hostId) {
+    return this.#state.forwards[hostId] ?? []
+  }
+
+  /** Every rule across hosts, each tagged with its `hostId`. */
+  allForwards() {
+    return Object.entries(this.#state.forwards)
+      .flatMap(([hostId, rules]) => rules.map((rule) => ({ ...rule, hostId })))
+  }
+
+  /** Replace the rule list for one host (an empty list removes the entry). */
+  async setForwards(hostId, rules) {
+    if (rules.length === 0) delete this.#state.forwards[hostId]
+    else this.#state.forwards[hostId] = rules
     this.touch()
   }
 

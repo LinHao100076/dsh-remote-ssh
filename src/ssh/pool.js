@@ -2,8 +2,9 @@
  * SSH connection pool.
  *
  * One `ssh2.Client` per host id, multiplexing every consumer: the file API
- * (SFTP), the terminal WebSockets (shell/exec channels) and the agent tools
- * (exec). Connections are opened lazily — `ensure()` connects on demand — so a
+ * (SFTP), the terminal WebSockets (shell/exec channels), the agent tools
+ * (exec) and the `ssh -L` port forwards (direct-tcpip channels). Connections
+ * are opened lazily — `ensure()` connects on demand — so a
  * host that was disconnected or never touched costs nothing until it is used,
  * and a dropped connection heals on the next request instead of requiring a
  * manual reconnect.
@@ -73,6 +74,16 @@ function classify(error) {
 export class SshPool {
   /** @type {Map<string, object>} */
   #records = new Map()
+  /**
+   * Credentials held in memory per host, never on disk.
+   *
+   * They exist so a *background* consumer can heal a dropped connection on its
+   * own: a listening port-forward's next inbound socket, or a retried upload,
+   * has no UI to re-ask for a password. Cleared as soon as a disconnect is
+   * explicit (`close()`) or the plugin unloads.
+   * @type {Map<string, {password?: string, passphrase?: string}>}
+   */
+  #secrets = new Map()
   /**
    * @param {object} options - pool options.
    * @param {(event: object) => void} [options.onEvent] - status change sink (UI/push).
@@ -208,7 +219,12 @@ export class SshPool {
   }
 
   async #connect(host) {
-    const options = this.#options(host)
+    // A re-connect after a network drop arrives without the password (the row
+    // never stores one), so the remembered secret fills the gap.
+    const remembered = this.#secrets.get(host.id)
+    const options = this.#options(remembered === undefined
+      ? host
+      : { ...host, auth: { ...(host.auth ?? { type: 'agent' }), ...remembered } })
     const client = new Client()
     const record = () => this.#records.get(host.id)
     try {
@@ -243,6 +259,7 @@ export class SshPool {
         this.#records.set(host.id, { hostId: host.id, status: 'connected', client, since: Date.now() })
       }
       this.onEvent({ hostId: host.id, status: 'connected' })
+      this.#remember(host.id, options)
       return client
     } catch (error) {
       client.__jump?.dispose?.()
@@ -252,9 +269,19 @@ export class SshPool {
     }
   }
 
-  /** TLS-style close: drop the client, keep the record for status display. */
+  /** Keep the credentials of a successful connection in memory (never on disk). */
+  #remember(hostId, options) {
+    const secret = {}
+    if (typeof options.password === 'string' && options.password !== '') secret.password = options.password
+    if (typeof options.passphrase === 'string' && options.passphrase !== '') secret.passphrase = options.passphrase
+    if (Object.keys(secret).length === 0) this.#secrets.delete(hostId)
+    else this.#secrets.set(hostId, secret)
+  }
+
+  /** Drop a client and forget its credentials (an explicit disconnect). */
   close(hostId) {
     const record = this.#records.get(hostId)
+    this.#secrets.delete(hostId)
     if (record === undefined) return
     record.sftp?.end?.()
     record.client?.__jump?.dispose?.()
@@ -353,9 +380,40 @@ export class SshPool {
     })
   }
 
+  /**
+   * Open a `direct-tcpip` channel to `dstHost:dstPort` — the tunnel end of an
+   * `ssh -L`. The source address is only used by the server for logging, so a
+   * loopback placeholder is enough and avoids leaking the client's LAN address.
+   *
+   * `ensure()` runs first, which is what makes a listening tunnel self-healing:
+   * after the connection drops, the next inbound socket reconnects here instead
+   * of failing for as long as the listener lives.
+   * @param {object} host - stored host row.
+   * @param {string} dstHost - target host, resolved from the remote side.
+   * @param {number} dstPort - target port.
+   * @returns {Promise<import('stream').Duplex>} the channel stream.
+   */
+  async forward(host, dstHost, dstPort) {
+    const client = await this.ensure(host)
+    return new Promise((resolve, reject) => {
+      client.forwardOut('127.0.0.1', 0, dstHost, dstPort, (error, stream) => {
+        if (error) {
+          // A refused target means the *remote* service is down, not the SSH
+          // connection, so this must not be reported as a transport failure.
+          reject(/ECONNREFUSED|connect failed/i.test(String(error.message))
+            ? new RemoteError('target-refused', `远端 ${dstHost}:${dstPort} 拒绝连接：服务未监听`, 502)
+            : classify(error))
+          return
+        }
+        resolve(stream)
+      })
+    })
+  }
+
   /** Close every connection (plugin unload). */
   dispose() {
     for (const hostId of [...this.#records.keys()]) this.close(hostId)
     this.#records.clear()
+    this.#secrets.clear()
   }
 }
