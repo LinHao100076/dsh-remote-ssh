@@ -120,6 +120,22 @@ export const CSS = `
 .rs-term-status { display: flex; align-items: center; gap: 7px; padding: 4px 9px; border-bottom: 1px solid var(--rs-line); font-family: var(--rs-mono); font-size: 10px; color: var(--rs-fg3); flex: none; }
 .rs-banner { display: flex; gap: 6px; align-items: flex-start; padding: 6px 9px; background: rgba(162,97,10,.10); color: var(--rs-warn); font-size: 11px; border-bottom: 1px solid var(--rs-line); flex: none; }
 
+/* ── native workspace ───────────────────────────────────────────────── */
+/* One panel in DSH's own right sidebar: a strip over the four panes. Each pane
+   keeps its own .rs-root chrome, so only the outer column is laid out here. */
+.rs-wtabs { display: flex; align-items: center; gap: 2px; padding: 5px 6px; border-bottom: 1px solid var(--rs-line); flex: none; }
+.rs-wtab {
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 9px;
+  border-radius: 6px; border: 1px solid transparent; background: transparent;
+  color: var(--rs-fg3); font: inherit; cursor: pointer; white-space: nowrap;
+}
+.rs-wtab:hover { background: var(--rs-hover); color: var(--rs-fg2); }
+.rs-wtab.on { background: var(--rs-layer2); border-color: var(--rs-line); color: var(--rs-fg); font-weight: 500; }
+.rs-wbody { flex: 1; min-height: 0; display: flex; }
+.rs-wpane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rs-wpane[hidden] { display: none; }
+.rs-wpane > .rs-root { flex: 1; height: auto; min-height: 0; }
+
 /* ── cards ──────────────────────────────────────────────────────────── */
 .rs-card { border: 1px solid var(--rs-line); border-radius: 8px; background: var(--rs-bg); margin: 8px; overflow: hidden; }
 .rs-card-h { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-bottom: 1px solid var(--rs-line); font-size: 11.5px; color: var(--rs-fg2); }

@@ -10,7 +10,7 @@
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { createElement as h, useEffect, useRef, useState } from 'react'
-import { hostStore, refreshStatuses, usePolling, useStore, wsUrl } from './state.js'
+import { hostService, hostStore, refreshStatuses, usePolling, useStore, wsUrl } from './state.js'
 import { Banner, Button, Dot, Empty, Icon, IconButton } from './ui.js'
 
 /** Read one theme token from an element, with a light-mode fallback. */
@@ -164,7 +164,7 @@ export function TerminalPane({ ctx, scope, tab, visible }) {
   }
 
   const openNew = () => {
-    const service = ctx.betterSidebar
+    const service = hostService(ctx)
     if (typeof service?.openTab !== 'function') return
     service.openTab({
       type: 'dsh-remote-ssh:terminal',
