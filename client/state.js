@@ -2,23 +2,77 @@
  * Client-side plumbing: the JSON API client, small external stores, hooks, and
  * path/format helpers.
  *
- * The API base URL always comes from `ctx.betterSidebar.hostRouteUrl(...)`.
- * A leading-slash URL would pin requests to the origin root and break every
- * reverse-proxy deployment where DSH is mounted under a prefix.
+ * Routes resolve against the page's own base, so a reverse-proxy prefix survives
+ * (a leading-slash URL would pin requests to the origin root). better-sidebar
+ * offers `hostRouteUrl` and is preferred when it is there; the fallback below is
+ * what keeps the plugin working in a profile that runs without it — the native
+ * right sidebar needs no third-party service.
+ *
+ * WebSockets take the *transport* base instead when the page is not served over
+ * `http(s)`: the desktop shell runs the page at `dsh-app://app/`, a scheme that
+ * cannot carry `ws:` (its host is the literal string `app`, which no DNS lookup
+ * resolves). `__DSH_TRANSPORT__.streamBaseUrl` is the Host's real origin and is
+ * the only base the socket can use there.
  * @module dsh-remote-ssh/client/state
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 
+/** Placeholder origin for non-DOM evaluation (tests, SSR); never requested. */
+const PLACEHOLDER_ORIGIN = 'http://dsh.internal/'
+
+/** The page's own base, with or without a reverse-proxy directory prefix. */
+function pageBase() {
+  const base = typeof document !== 'undefined' ? document.baseURI : undefined
+  return typeof base === 'string' && base !== '' ? base : PLACEHOLDER_ORIGIN
+}
+
+/** Force a trailing slash: DSH serves the GUI from a directory, never a file. */
+function directoryBase(base) {
+  const url = new URL(base === '' ? PLACEHOLDER_ORIGIN : base, PLACEHOLDER_ORIGIN)
+  url.search = ''
+  url.hash = ''
+  if (!url.pathname.endsWith('/')) url.pathname = `${url.pathname}/`
+  return url.toString()
+}
+
+/** The base a WebSocket can be built from; see the module comment. */
+function socketBase() {
+  const page = pageBase()
+  if (/^https?:/i.test(page)) return page
+  const injected = globalThis.__DSH_TRANSPORT__?.streamBaseUrl
+  return typeof injected === 'string' && injected !== '' ? injected : page
+}
+
+/**
+ * Read better-sidebar's service without disturbing cordis.
+ *
+ * A client context is a proxy that THROWS on a service it was not injected with
+ * (`cannot get property "betterSidebar" without inject`), so a plain property
+ * read turns "the plugin is not installed" — the case this plugin now supports —
+ * into a render error. `ctx.get` is the safe accessor and returns `undefined`.
+ * @param {object} ctx - client context.
+ * @returns {object|undefined} the service when it is there.
+ */
+export function hostService(ctx) {
+  if (ctx === undefined || ctx === null) return undefined
+  if (typeof ctx.get === 'function') return ctx.get('betterSidebar')
+  try {
+    return ctx.betterSidebar
+  } catch {
+    return undefined
+  }
+}
+
 /** Resolve a plugin route against the host's transport base. */
 export function routeUrl(ctx, path) {
-  const service = ctx?.betterSidebar
+  const service = hostService(ctx)
   if (typeof service?.hostRouteUrl === 'function') return service.hostRouteUrl(path)
-  return new URL(path, document.baseURI).toString()
+  return new URL(String(path).replace(/^\/+/, ''), directoryBase(pageBase())).toString()
 }
 
 /** Resolve a plugin route as a WebSocket URL with query parameters. */
 export function wsUrl(ctx, path, params = {}) {
-  const url = new URL(routeUrl(ctx, path), document.baseURI)
+  const url = new URL(String(path).replace(/^\/+/, ''), directoryBase(socketBase()))
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== null) url.searchParams.set(key, String(value))
