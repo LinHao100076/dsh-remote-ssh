@@ -86,6 +86,29 @@ node scripts/check-ssh.mjs
 RS_ORIGIN=http://127.0.0.1:4987 RS_COOKIE_JAR=/path/to/jar node test/e2e-profile.mjs
 ```
 
+## 版本与分支约定
+
+- **`main` 永远是可用版本**。每次发版打附注标签（`v0.1.0`、`v0.2.0`…），标签说明里写清两件事：凭什么算可用、还差什么。用 `git tag -n99 -l` 或 `git show v0.1.0` 查看。
+- **新功能一律从 `main` 切 `feat/<名字>`**，做完合回 `main` 再删分支。名字用短横线：`feat/port-forward`、`feat/remote-search`、`feat/resume-transfer`。
+- 提交信息用 conventional 前缀：`feat:` 新功能、`fix:` 修缺陷、`docs:` 文档、`test:` 测试、`chore:` 杂项。
+
+```bash
+git switch -c feat/port-forward              # 开工
+git commit -am "feat: 端口转发 -L 的规则与生命周期"
+git switch main && git merge --no-ff feat/port-forward
+git tag -a v0.2.0 -m "v0.2.0 —— 支持本地端口转发"   # 发版
+```
+
+### 推到 GitHub
+
+仓库目前只做了本地初始化，没有配远程。联网后执行：
+
+```bash
+git remote add origin git@github.com:<你的账号>/dsh-remote-ssh.git
+git push -u origin main
+git push --tags          # 标签不会跟着 main 自动推，必须单独推
+```
+
 ## 环境
 
 - DSH `0.2.0-rc.2`
