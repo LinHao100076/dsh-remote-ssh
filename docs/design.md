@@ -291,15 +291,17 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 | 端口转发（监听、direct-tcpip、生命周期） | `src/forward/manager.js` |
 | 终端桥（WS ⇄ SSH PTY + tmux 判定） | `src/ws/term.js` |
 | 状态持久化（密码不落盘） | `src/store.js` |
-| 客户端三个标签页 | `client/index.js`、`client/*-view.js` |
+| 客户端三个标签页 + 原生入口 | `client/index.js`、`client/native-view.js`、`client/*-view.js` |
 
-### 8.2 三个踩过的坑
+### 8.2 四个踩过的坑
 
 1. **`ctx` 是 Proxy，不是对象**。访问未在 `inject` 里声明的服务会抛 `cannot get property "x" without inject`。我在 `system.ping` 里读了 `ctx.pluginVersion`，单测用的假 ctx 是普通对象所以全绿，真 profile 里直接 500。修法：版本从插件自身传入（`buildApi({ version })`），并且把单测的假 ctx 也换成同样会抛错的 Proxy —— 这类 bug 只有让测试环境同样严格才防得住。
 
 2. **`registerTab` 对重复 id 会 `throw`**（`[dsh-better-sidebar] tab type "x" already registered`），且它的返回值才是 disposer。HMR 在旧 effect 销毁前重跑 `apply` 就会炸掉整个面板。修法：注册前用 `service.getTab(id)` 判断，已存在就跳过；`ctx.effect(() => service.registerTab(...))` 保留返回的 disposer。
 
 3. **测试会悄悄跑在旧产物上。** 客户端代码写错时 `build.mjs` 失败，但 `npm test` 照样读上一次的 `lib/client.js` 全绿 —— 改完代码却看到绿灯，比红灯危险得多。修法：`package.json` 加 `"pretest": "node build.mjs"`，npm 会在 `test` 前自动跑，构建失败即中止。
+
+4. **「可选依赖」被写成了「没有就隐藏」**（issue #1）。初见时把 better-sidebar 当唯一入口：服务不在就静默返回，于是停用 better-sidebar 后插件从侧边栏彻底消失。修法不是兜底提示，而是补一个**不依赖它**的入口——DSH 自带的右侧边栏（`ui-sidebar-right` 属于 `dsh-web-app` bundle，本来就在启动图里，better-sidebar 自己也只是往它里面注册 tab）。两条路径互斥，better-sidebar 后激活时交接。同时暴露了第 1 条坑的变体：`routeUrl` 里 `ctx?.betterSidebar` 在 Proxy 上仍然会抛，必须换成 `ctx.get('betterSidebar')`。
 
 ### 8.3 tmux 判定位置
 
@@ -313,8 +315,9 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 | `test/ssh.mjs` | 握手、密码认证、exec、PTY、TOFU 记录、改指纹报 `host-key-changed`、错密码报 `auth-failed`、连接复用 | `node test/ssh.mjs` |
 | `test/files.mjs` | 列表排序、二进制/超大/陈旧守卫、原子写不留临时文件、mkdir 递归、rename、递归删除 | `node test/files.mjs` |
 | `test/forward.mjs` | 真实 TCP 往返穿过 `direct-tcpip`、字节统计、同端口判重、端口被占、停止后拒绝连接、autoStart 语义、规则持久化无密码 | `node test/forward.mjs` |
-| `test/render.mjs` | 用真实 React `renderToString` 渲染四个面板，捕捉只在渲染期暴露的错误 | `node test/render.mjs` |
-| `test/bundle-check.html` | 真实浏览器加载 bundle：三个标签页、顺序 46/47/48、title/icon 函数解析、重复挂载幂等、卸载后清空、无 better-sidebar 时静默 | `chrome --headless=new --dump-dom …` |
+| `test/render.mjs` | 用真实 React `renderToString` 渲染四个面板 + 原生工作区，捕捉只在渲染期暴露的错误 | `node test/render.mjs` |
+| `test/native.mjs` | 有 better-sidebar 时四个标签页、没有时原生类型/面板/头部按钮、后激活时交接、卸载无残留 | `node test/native.mjs` |
+| `test/bundle-check.html` | 真实浏览器加载 bundle：四个标签页、顺序 46–49、title/icon 函数解析、重复挂载幂等、卸载后清空 | `chrome --headless=new --dump-dom …` |
 | `test/e2e-profile.mjs` | 真实 DSH profile 内：路由挂载、cookie 准入、两条终端分支、PTY 往返、resize 不断连 | 见 README |
 | `scripts/check-ssh.mjs` | 真实服务器：连接、UTF-8 读写、上传下载字节一致 | `node scripts/check-ssh.mjs` |
 
@@ -333,3 +336,14 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 
 3. **错误要分清「远端服务没起」和「SSH 断了」。** 前者是 `target-refused`（服务本身的问题，改远端），后者是传输层错误（改网络或认证）。混成一个「转发失败」，用户就不知道该去修哪一头。
 
+### 8.7 为什么原生入口是「第二条路」而不是「兜底提示」
+
+用户停用 better-sidebar 后，插件整条从侧边栏消失（issue #1）。第一反应是弹个「请安装 better-sidebar」的提示，但那等于把一个可选依赖升级成硬依赖。
+
+翻 better-sidebar 的实现才发现它自己也只做了一件事：往 DSH **自带的** `ui-sidebar-right`（`dsh-web-app` bundle 里，和本插件毫无关系）注册 tab 类型与面板。也就是说，"在右侧边栏出现一个面板"这个能力本来就属于 DSH，不属于 better-sidebar。于是本插件直接用它：
+
+- `sidebarRightTabs.register({ id, kind, priority: 'extension' })` —— 一个页类型，`kind` 就是包名；
+- `sidebar.right.pane.tab` slot —— 面板本体，内部用一条自己的 tab 条切换四个 pane；
+- `conversation.session.header.utilities` slot —— 会话头部的服务器图标，点一下 `sidebarRight.openTab(kind)`。
+
+结果是不装 better-sidebar 也能用完整功能，装了就自动换成更细的四个独立标签页（一次激活只选一种，避免两个入口同时出现）。代价是面板里四个 pane 必须共用一块宽度：所以 pane 用 `hidden` 保活而不是卸载 —— 否则切到文件页看一眼，终端的 socket 和 tmux 附着就都没了。

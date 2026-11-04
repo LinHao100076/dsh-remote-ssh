@@ -2,13 +2,22 @@
 
 DSH（DeepSeek Harness）的远程 SSH 插件：在侧边栏里看远端文件系统、开远端终端、把远端服务映射到本机，本地改动自动上传、远端文件可下载，并与 `dsh-better-sidebar` 联动。
 
-当前状态：**B 版已实现并通过端到端验证**（本地镜像 + 旁挂远端通道，本地为真相）。`v0.1.0` 覆盖文件/终端/同步，`feat/port-forward` 增加端口转发。
+当前状态：**B 版已实现并通过端到端验证**（本地镜像 + 旁挂远端通道，本地为真相）。`v0.1.0` 覆盖文件/终端/同步，`feat/port-forward` 增加端口转发，`v0.2.1` 增加不依赖 better-sidebar 的原生入口。
+
+## 两个入口（better-sidebar 是可选的）
+
+| 装了什么 | 出现在哪 | 怎么打开 |
+| --- | --- | --- |
+| 有 `dsh-better-sidebar` | better-sidebar 的侧栏，四个独立标签页（远程 / 远程终端 / 同步 / 转发） | 侧栏里点标签页 |
+| 没有 / 停用了 `dsh-better-sidebar` | DSH **自带的右侧边栏**，一个「远程 SSH」面板，面板内四个切换 | 会话头部右上角的服务器图标按钮 |
+
+两条路径互斥：如果 better-sidebar 在启动后才激活，插件会把原生入口撤掉、换成四个标签页，不会同时出现两个入口。
 
 ## 目录
 
 ```
 src/               宿主端：HTTP API、WebSocket 终端、SSH 连接池、文件/传输/同步、端口转发
-client/            浏览器端：四个侧边栏标签页（文件 / 终端 / 同步 / 转发）
+client/            浏览器端：四个面板 + 两个入口（better-sidebar 标签页 / 原生右侧边栏）
 lib/client.js      构建产物（esbuild 打包，由宿主按 /plugins/... 提供）
 docs/design.md     架构取舍、平台发现、问题清单、里程碑
 ui/prototype.html  UI 原型（单文件，浏览器直接打开，7 个状态可切换）
@@ -33,7 +42,7 @@ scripts/           对着真实服务器跑的验收脚本
 
 ```bash
 npm run pack:rel     # 生成 dist/dsh-remote-ssh-<版本>.tgz
-dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.2.0.tgz"
+dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.2.1.tgz"
 ```
 
 `-w` 不能省：profile 里有 `pnpm-workspace.yaml`，pnpm 认为根是 workspace root，不带 `-w` 会报 `ERR_PNPM_ADDING_TO_ROOT`。
@@ -42,7 +51,7 @@ dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.2.0.tgz"
 
 ```json
 "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-remote-ssh"] } },
-"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-0.2.0.tgz" }
+"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-0.2.1.tgz" }
 ```
 
 然后启动（app 参数直接跟在后面，不要写 `web`）：
@@ -99,7 +108,7 @@ ssh -L 6379:127.0.0.1:6379 me@server
 ## 验证
 
 ```bash
-npm test             # 先自动 build，再跑五组 Node 测试
+npm test             # 先自动 build，再跑六组 Node 测试
 ```
 
 `npm test` 有 `pretest` 钩子，会先重建 `lib/client.js` —— 否则渲染测试可能跑在旧产物上，改了代码却仍报绿。
@@ -110,9 +119,10 @@ npm test             # 先自动 build，再跑五组 Node 测试
 | `test/ssh.mjs` | 握手、认证、exec、PTY、TOFU、错误分类、连接复用 |
 | `test/files.mjs` | 列表、文本守卫、原子写、陈旧检测、目录操作 |
 | `test/forward.mjs` | 真实 TCP 往返穿透 `direct-tcpip`、字节统计、端口占用、停止后拒绝、autoStart、落盘无密码 |
-| `test/render.mjs` | 用真实 React（`react-dom/server`）渲染四个面板，捕捉只在渲染时炸的错 |
+| `test/render.mjs` | 用真实 React（`react-dom/server`）渲染四个面板 + 原生工作区，捕捉只在渲染时炸的错 |
+| `test/native.mjs` | 两个入口的取舍：有 better-sidebar 时四个标签页、没有时原生类型/面板/头部按钮、后激活时的交接、卸载后无残留 |
 
-浏览器产物检查（在真实 Chrome 里加载 bundle，验证四个标签页注册、顺序、重复挂载幂等、卸载后清空、无 better-sidebar 时静默降级）：
+浏览器产物检查（在真实 Chrome 里加载 bundle，验证四个标签页注册、顺序、重复挂载幂等、卸载后清空）：
 
 ```bash
 chrome --headless=new --dump-dom test/bundle-check.html
@@ -169,7 +179,10 @@ git push --tags          # 标签不会跟着 main 自动推，必须单独推
 - `dsh-better-sidebar` `0.28.0`（peer，optional）
 - Node ≥ 20
 
-注意：`dsh-better-sidebar@0.28.0` 的 peer 要求是 `^0.2.1-rc.1`，在 `0.2.0-rc.2` 上 DSH 会**跳过**这个 bundle。跳过意味着本插件的三个标签页不会出现（面板本身不报错）。授权豁免：
+注意：`dsh-better-sidebar@0.28.0` 的 peer 要求是 `^0.2.1-rc.1`，在 `0.2.0-rc.2` 上 DSH 会**跳过**这个 bundle。跳过不影响本插件：它会改用原生右侧边栏 + 会话头部按钮作为入口。想继续用 better-sidebar 的两个选择：
+
+1. **降到 `0.26.1`**（peer 是 `^0.2.0-rc.2`，天然匹配，不需要任何豁免，`registerTab` 契约一致）：`dsh plugin --profile <name> add -w dsh-better-sidebar@0.26.1`。
+2. 或给 `0.28.0` 授权豁免：
 
 ```bash
 dsh plugin --profile <name> version-exemptions      # 看当前被拦的包与运行时版本
@@ -179,7 +192,7 @@ dsh plugin --profile <name> allow-version dsh-better-sidebar@0.28.0 \
 
 豁免写在 `<profile>/compatibility.json`，只对「这个包的这个版本 + 这个运行时版本」生效，升级任一侧都要重新授权。`desktop` profile 由应用独占，这条命令要在应用内的插件页面执行。
 
-本插件不依赖 better-sidebar 启动：服务不在时客户端不注册标签页、不报错；服务在时按下面的契约注册。
+本插件不依赖 better-sidebar 启动：服务不在时走原生入口（见上文「两个入口」）；服务在时按下面的契约注册。
 
 | 项        | 契约                                                                                                                      |
 | -------- | ----------------------------------------------------------------------------------------------------------------------- |
@@ -187,3 +200,13 @@ dsh plugin --profile <name> allow-version dsh-better-sidebar@0.28.0 \
 | 描述符      | `id / title / description / icon / order / component`；`title` 与 `icon` 可以是函数（插件内部用 `textOf` / `iconOf` 解析，`icon(size)`） |
 | 重复 id    | 原生实现会 `throw`，所以注册前用 `getTab(id)` 跳过（HMR 重挂不炸）                                                                          |
 | 组件 props | `ctx, store, scope, tab, visible, expanded, revealed, …`，面板用 `scope.sessionId` 与 `visible`                              |
+
+原生入口用的是 DSH 自带的那套（`dsh-web-app` bundle 里的 `ui-sidebar-right`），不依赖任何第三方插件：
+
+| 项 | 契约 |
+| --- | --- |
+| 类型 | `sidebarRightTabs.register({ id, kind, priority: 'extension', title, guide })`，`id` 与 `kind` 都是 `dsh-remote-ssh` |
+| 面板 | `ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({ name, key: id, inject: (sessionId) => props }, Component))` |
+| 入口按钮 | `conversation.session.header.utilities` 槽（list 槽，用 `id`），点击调 `sidebarRight.openTab('dsh-remote-ssh')` |
+| 读取服务 | 客户端 ctx 是 Proxy，**未 `inject` 的服务读属性会抛** `cannot get property "x" without inject`；一律用 `ctx.get(name)` |
+| 路由前缀 | HTTP 用 `document.baseURI`（反代前缀跟着走）；桌面壳页面是 `dsh-app://`，WebSocket 必须改用 `__DSH_TRANSPORT__.streamBaseUrl` |
