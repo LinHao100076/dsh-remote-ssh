@@ -36,6 +36,8 @@
   "scripts": {
     "build": "node build.mjs",
     "check": "node --check src/index.js && node --check lib/client.js",
+    "prepack": "node build.mjs",
+    "pack:rel": "npm pack --pack-destination dist",
     "pretest": "node build.mjs",
     "test": "node test/smoke.mjs && node test/ssh.mjs && node test/files.mjs && node test/forward.mjs && node test/render.mjs",
     "test:smoke": "node test/smoke.mjs",

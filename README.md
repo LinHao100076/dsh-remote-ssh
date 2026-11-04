@@ -29,20 +29,36 @@ scripts/           对着真实服务器跑的验收脚本
 
 ## 装到 profile 里
 
+推荐用发布包安装（一条命令，DSH 自己会把它写进 `dsh.profile.bundles`）：
+
 ```bash
-# 1. 链接到某个 profile（Windows 用目录联接，pnpm link 在 profile 根目录会失败）
-# 2. 在该 profile 的 cordis.patch.yml 追加：
+npm run pack:rel     # 生成 dist/dsh-remote-ssh-<版本>.tgz
+dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.2.0.tgz"
 ```
+
+`-w` 不能省：profile 里有 `pnpm-workspace.yaml`，pnpm 认为根是 workspace root，不带 `-w` 会报 `ERR_PNPM_ADDING_TO_ROOT`。
+
+装完 `package.json` 会变成：
+
+```json
+"dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-remote-ssh"] } },
+"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-0.2.0.tgz" }
+```
+
+然后启动（app 参数直接跟在后面，不要写 `web`）：
+
+```bash
+dsh --profile <name> --no-open --port 4987
+```
+
+`desktop` profile 由桌面应用独占，CLI 会拒绝（`profile "desktop" is managed exclusively by the Electron application`）。这种 profile 请在应用内的插件页面安装，或手工改 `package.json` 的 `bundles` 与 `cordis.patch.yml` 后重启应用。
+
+开发期想直连源码目录（改代码立即生效，但要自己保证 `lib/client.js` 已构建）时，也可以只在 `cordis.patch.yml` 里插入：
 
 ```yaml
 - insert:
     - id: dsh-remote-ssh
       name: "dsh-remote-ssh"
-```
-
-```bash
-# 3. 启动（注意 app 参数直接跟在后面，不要写 `web`）
-dsh --profile <name> --no-open --port 4987
 ```
 
 插件自己在 `~/.dsh/storages/dsh-remote-ssh/state.json` 存主机与映射。**密码和口令永不落盘**，只存在浏览器内存里，每次连接现取。
@@ -117,15 +133,25 @@ RS_ORIGIN=http://127.0.0.1:4987 RS_COOKIE_JAR=/path/to/jar node test/e2e-profile
 ## 版本与分支约定
 
 - **`main` 永远是可用版本**。每次发版打附注标签（`v0.1.0`、`v0.2.0`…），标签说明里写清两件事：凭什么算可用、还差什么。用 `git tag -n99 -l` 或 `git show v0.1.0` 查看。
-- **新功能一律从 `main` 切 `feat/<名字>`**，做完合回 `main` 再删分支。名字用短横线：`feat/port-forward`、`feat/remote-search`、`feat/resume-transfer`。
+- **新功能一律从 `main` 切 `feat/<名字>`**，做完 `--no-ff` 合回 `main`。**分支合完保留，不要删**——后面回看某个功能的独立历史、或者在旧功能上接着改都要用到它。名字用短横线：`feat/port-forward`、`feat/remote-search`、`feat/resume-transfer`。
 - 提交信息用 conventional 前缀：`feat:` 新功能、`fix:` 修缺陷、`docs:` 文档、`test:` 测试、`chore:` 杂项。
 
 ```bash
-git switch -c feat/port-forward              # 开工
-git commit -am "feat: 端口转发 -L 的规则与生命周期"
-git switch main && git merge --no-ff feat/port-forward
-git tag -a v0.2.0 -m "v0.2.0 —— 支持本地端口转发"   # 发版
+git switch -c feat/remote-search             # 开工
+git commit -am "feat: 远端 rg 搜索"
+git switch main && git merge --no-ff feat/remote-search
+git tag -a v0.3.0 -m "v0.3.0 —— 远端搜索"      # 发版
 ```
+
+### 发布包
+
+```bash
+npm run pack:rel      # 先跑 build，再 npm pack 到 dist/
+```
+
+`prepack` 钩子保证打包前一定重建 `lib/client.js`，所以包里不会出现旧产物。包内只含运行期需要的东西：`src/`、`lib/client.js`、`cordis.patch.yml`、`README.md`、`package.json`（18 个文件，约 140 KB）。`dist/` 不进版本库——它可以从任何一个标签重新生成。
+
+`test/`、`scripts/`、`docs/` 不进包，所以装到别处后跑不了 `npm test`；要在包装好的产物上验证，就在源码目录里跑。
 
 ### 推到 GitHub
 
@@ -143,7 +169,17 @@ git push --tags          # 标签不会跟着 main 自动推，必须单独推
 - `dsh-better-sidebar` `0.28.0`（peer，optional）
 - Node ≥ 20
 
-注意：`dsh-better-sidebar@0.28.0` 的 peer 要求是 `^0.2.1-rc.1`，在 `0.2.0-rc.2` 上 DSH 会**跳过**这个 bundle，除非显式授权版本豁免（`dsh plugin allow-version`）。本插件不依赖它启动：服务不在时客户端不注册标签页、不报错；服务在时按下面的契约注册。
+注意：`dsh-better-sidebar@0.28.0` 的 peer 要求是 `^0.2.1-rc.1`，在 `0.2.0-rc.2` 上 DSH 会**跳过**这个 bundle。跳过意味着本插件的三个标签页不会出现（面板本身不报错）。授权豁免：
+
+```bash
+dsh plugin --profile <name> version-exemptions      # 看当前被拦的包与运行时版本
+dsh plugin --profile <name> allow-version dsh-better-sidebar@0.28.0 \
+  --dsh-version 0.2.0-rc.2 --accept-risk
+```
+
+豁免写在 `<profile>/compatibility.json`，只对「这个包的这个版本 + 这个运行时版本」生效，升级任一侧都要重新授权。`desktop` profile 由应用独占，这条命令要在应用内的插件页面执行。
+
+本插件不依赖 better-sidebar 启动：服务不在时客户端不注册标签页、不报错；服务在时按下面的契约注册。
 
 | 项        | 契约                                                                                                                      |
 | -------- | ----------------------------------------------------------------------------------------------------------------------- |

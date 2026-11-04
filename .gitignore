@@ -5,6 +5,9 @@ node_modules/
 *.log
 npm-debug.log*
 
+# 发布打包产物（npm run pack:rel 生成，可从标签重新构建）
+dist/
+
 # 编辑器 / 系统
 .DS_Store
 Thumbs.db
