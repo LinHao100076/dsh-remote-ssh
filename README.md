@@ -12,7 +12,7 @@ DSH（DeepSeek Harness）的远程 SSH 插件：在侧边栏里看远端文件�
   <img src="docs/assets/terminal.png" width="330" alt="终端：tmux 持久会话，刷新后接回同一个 shell">
 </p>
 
-当前版本 **`0.6.0`**。`0.4.0` 加远端内容搜索，`0.5.0` 加断点续传，`0.6.0` 补上 socks5 动态转发与 `-R` 反向转发。完整变更见 [CHANGELOG](CHANGELOG.md)，下一步见 [ROADMAP](ROADMAP.md)。
+当前版本 **`0.6.1`** —— 第一个正式版，Node 20 与 22 都能装。`0.4.0` 加远端内容搜索，`0.5.0` 加断点续传，`0.6.0` 补上 socks5 动态转发与 `-R` 反向转发，`0.6.1` 修掉「Node 20 上整份宿主端 bundle 加载即抛」的问题。更早的版本在 Release 上都标为 beta，各自坏在哪、后来被哪个版本修掉，写在对应 Release 的说明里。完整变更见 [CHANGELOG](CHANGELOG.md)，下一步见 [ROADMAP](ROADMAP.md)。
 
 ## 文档
 
@@ -71,7 +71,7 @@ scripts/           对着真实服务器跑的验收脚本；`dev-remote.mjs` �
 
 ```bash
 npm run pack:rel     # 生成 dist/dsh-remote-ssh-<版本>.tgz
-dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.3.4.tgz"
+dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-<版本>.tgz"
 ```
 
 `-w` 不能省：profile 里有 `pnpm-workspace.yaml`，pnpm 认为根是 workspace root，不带 `-w` 会报 `ERR_PNPM_ADDING_TO_ROOT`。
@@ -80,12 +80,12 @@ dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.3.4.tgz"
 
 ```json
 "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-remote-ssh"] } },
-"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-0.3.4.tgz" }
+"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-<版本>.tgz" }
 ```
 
 **不要解压 tgz 后指向解压出来的目录。** pnpm 会把本地目录写成 `link:`，而链接进来的目录不会安装它自己的依赖 —— 一旦插件还有 `dependencies`，宿主端第一次 `import` 就会 `ERR_MODULE_NOT_FOUND`，整个插件停用，界面上只留一句「启用失败」。
 
-`0.3.1` 起这条坑已经填了：发布包里**没有任何运行期依赖**。`ssh2`、`ws`、`chokidar` 全部被 esbuild 打进 `lib/server.mjs`（约 980 KiB），装到哪都一样能跑，`link:` 也行。所以包里 `dependencies` 是空的，`ssh2` 也不再在安装期尝试编译原生模块。
+`0.3.1` 起这条坑已经填了：发布包里**没有任何运行期依赖**。`ssh2`、`ws`、`chokidar` 全部被 esbuild 打进 `lib/server.mjs`（约 1 MiB），装到哪都一样能跑，`link:` 也行。所以包里 `dependencies` 是空的，`ssh2` 也不再在安装期尝试编译原生模块。
 
 然后启动（app 参数直接跟在后面，不要写 `web`）：
 
@@ -262,6 +262,8 @@ git push origin v0.x.0        # 标签不会跟着 main 自动推，必须单独
 ```
 
 然后在 GitHub 上发 Release 并附上 `dist/dsh-remote-ssh-<版本>.tgz`。标签说明是这个项目最重要的一份文档：它记录的是「在这个时间点，什么被验证过、什么还没有」，比 CHANGELOG 更细。
+
+**事后发现某个版本不该被当成正式版时**，把它的 Release 勾成 pre-release、标题带上 `beta`，并在说明顶部写清三件事：坏在哪、后果是什么、改用哪个版本。已发布的标签和产物不改名不删除 —— 改了就等于伪造历史，装过那个版本的人会对不上。
 
 分支不用手工清理：合完的分支一律保留并推到远端（见 [CONTRIBUTING.md](CONTRIBUTING.md)）。
 

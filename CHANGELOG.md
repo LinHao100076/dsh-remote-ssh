@@ -4,20 +4,23 @@
 
 `0.x` 期间：次版本号 = 新能力，修订号 = 修复。`1.0.0` 留给执行世界替换（A 路线）真正落地。
 
-## 未发布
+## 0.6.1 — 2026-11-05
 
-### 新增
-
-- 开源工程化：`LICENSE`（MIT）、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`SECURITY.md`、issue / PR 模板、GitHub Actions CI、本更新日志与 `ROADMAP.md`。
-- README 补面板截图（`docs/assets/`）与目录导航。
-
-### 变更
-
-- `package.json` 补齐 `repository` / `homepage` / `bugs` / `author` 与更完整的 `keywords`。
+第一个能在 Node 20 上装起来的版本。**功能与 0.6.0 完全相同**，只差这一处修复。
 
 ### 修复
 
 - **Node 20 上插件完全无法加载。** `src/ssh/config.js` 从 `node:fs` 里 import 了 `globSync`，那是 Node 22 才加的导出；缺少名字导出会在**模块加载阶段**直接抛 `SyntaxError`，整份宿主端 bundle 起不来，而 `engines` 一直声明 `>=20`。现在 `Include` 的通配自己按路径段展开（支持 `*` 和 `?`），不再依赖 `globSync`。这个问题本机永远测不出来（开发机是 Node 22），是 CI 在 node 20 上跑第一遍就抓到的 —— `test/ssh.mjs` 补了 6 条断言把它钉住。
+
+### 其它
+
+- 仓库转为公开：`LICENSE`（MIT）、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`SECURITY.md`、issue / PR 模板、GitHub Actions CI（node 20 + 22 跑完整测试，并校验 `lib/` 与源码同步）、`ROADMAP.md`。
+- `package.json` 补齐 `repository` / `homepage` / `bugs` / `author` 与更完整的 `keywords`。
+- README 补面板截图（`docs/assets/`）与目录导航。
+
+### 关于更早的版本
+
+`v0.1.0` 至 `v0.6.0` 的每一个标签都带着上面这个 Node 20 加载问题，因此在 GitHub Release 上都标记为 beta；`v0.6.1` 是第一个正式版。各版本具体坏在哪、后来被哪个版本修掉，写在对应 Release 的说明里。
 
 ## 0.6.0 — 2026-11-05
 
