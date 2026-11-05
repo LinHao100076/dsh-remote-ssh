@@ -1,0 +1,110 @@
+name: 缺陷报告
+description: 界面没渲染、连不上、终端崩溃、同步/传输/转发不对
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先谢谢。**越具体越省事**：现象 + 截图 + 复现路径，三样齐了基本当场能定位。
+
+        ⚠️ 不要贴密码、私钥、真实主机地址 —— 换成占位符。安全漏洞请走 [私密渠道](https://github.com/LinHao100076/dsh-ssh-remote/security/advisories/new)，不要开在这里。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 你看到了什么？一句话说清，先别写推测。
+      placeholder: 点了「文件」标签页，右边一片空白，控制台报 XXX。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 点哪里 → 输什么 → 第几步出问题。能稳定复现的步骤信息量最大。
+      placeholder: |
+        1. 新建主机 10.0.0.5:22，密码认证
+        2. 点「测试连接」→ 显示已连接
+        3. 点「文件」标签页 → 空白
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 同一位置上，你觉得应该发生什么。
+    validations:
+      required: false
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本
+      description: 设置页底部，或 `package.json` 的 `version`。
+      placeholder: 0.6.0
+    validations:
+      required: true
+
+  - type: input
+    id: dsh-version
+    attributes:
+      label: DSH 版本
+      placeholder: 0.2.0-rc.2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS
+        - Linux
+        - 其他（在下方的补充里写明）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: sidebar
+    attributes:
+      label: better-sidebar
+      description: 入口走的是哪条路，会决定问题出在哪套注册逻辑上。
+      options:
+        - 装了 dsh-better-sidebar
+        - 没装 / 停用了（走原生右侧边栏）
+        - 不确定
+    validations:
+      required: true
+
+  - type: input
+    id: sshd
+    attributes:
+      label: 远端 sshd
+      description: 知道的话填一下，OpenSSH / Dropbear / Windows OpenSSH 的行为差别很大。
+      placeholder: OpenSSH 8.9 on Ubuntu 22.04
+    validations:
+      required: false
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 截图 / 日志
+      description: 面板上的错误框原文、宿主端 stderr、浏览器控制台的红色报错。截图可以直接拖进来。
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 我已确认这不是安全漏洞（是的话请走私密渠道）
+          required: true
+        - label: 我贴出的内容里没有密码、私钥或真实主机地址
+          required: true
