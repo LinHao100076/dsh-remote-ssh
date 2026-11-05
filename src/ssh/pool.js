@@ -75,6 +75,16 @@ export class SshPool {
   /** @type {Map<string, object>} */
   #records = new Map()
   /**
+   * Reverse (`ssh -R`) forward registrations, per host, keyed `bindHost:bindPort`.
+   *
+   * They live here rather than in the forward manager because the listening
+   * socket is on the *server* and dies with the SSH connection: only the pool
+   * knows when a new client is ready, so only the pool can re-request the port.
+   * A manager-owned registration would be silently stale after every reconnect.
+   * @type {Map<string, Map<string, {bindHost: string, bindPort: number, granted?: number, client?: object, onConnection: Function}>>}
+   */
+  #reverse = new Map()
+  /**
    * Credentials held in memory per host, never on disk.
    *
    * They exist so a *background* consumer can heal a dropped connection on its
@@ -263,6 +273,11 @@ export class SshPool {
         this.#records.set(host.id, { hostId: host.id, status: 'disconnected', client: undefined })
         this.onEvent({ hostId: host.id, status: 'disconnected' })
       })
+      // Inbound channels for `ssh -R` arrive on the client, not on a stream we
+      // own, so the dispatch has to be installed per connection. It is installed
+      // before the status flips to `connected`, so a forwarded connection racing
+      // the handshake cannot land on a client with no listener.
+      this.#attachInbound(host.id, client)
       const current = record()
       if (current !== undefined) {
         current.client = client
@@ -274,6 +289,11 @@ export class SshPool {
       }
       this.onEvent({ hostId: host.id, status: 'connected' })
       this.#remember(host.id, options)
+      // Reverse forwards must be re-requested on every fresh connection — the
+      // server dropped those ports when the previous one closed. Awaited so the
+      // caller never observes a "connected" host whose `-R` rules are not
+      // actually reachable yet; failures are recorded per entry, not thrown.
+      await this.#rearmReverse(host.id, client)
       return client
     } catch (error) {
       client.__jump?.dispose?.()
@@ -296,6 +316,9 @@ export class SshPool {
   close(hostId) {
     const record = this.#records.get(hostId)
     this.#secrets.delete(hostId)
+    // Registrations die with the connection they belonged to; keeping them would
+    // silently re-open server ports on the next connect without the user asking.
+    this.#reverse.delete(hostId)
     if (record === undefined) return
     record.sftp?.end?.()
     record.client?.__jump?.dispose?.()
@@ -414,8 +437,12 @@ export class SshPool {
         if (error) {
           // A refused target means the *remote* service is down, not the SSH
           // connection, so this must not be reported as a transport failure.
-          reject(/ECONNREFUSED|connect failed/i.test(String(error.message))
-            ? new RemoteError('target-refused', `远端 ${dstHost}:${dstPort} 拒绝连接：服务未监听`, 502)
+          // OpenSSH answers every failed `connect()` with a bare channel-open
+          // failure (no reason string), which is why that message is listed too:
+          // "refused" and "unreachable" are indistinguishable at this level, and
+          // both mean the same thing to whoever is looking at the tunnel.
+          reject(/ECONNREFUSED|connect failed|Channel open failure/i.test(String(error.message))
+            ? new RemoteError('target-refused', `远端 ${dstHost}:${dstPort} 拒绝连接：服务未监听，或服务器无法访问该地址`, 502)
             : classify(error))
           return
         }
@@ -429,5 +456,136 @@ export class SshPool {
     for (const hostId of [...this.#records.keys()]) this.close(hostId)
     this.#records.clear()
     this.#secrets.clear()
+    this.#reverse.clear()
+  }
+
+  /* ── reverse forwarding (`ssh -R`) ────────────────────────────────────── */
+
+  /**
+   * Ask the server to listen on `bindHost:bindPort` and route inbound
+   * connections here. Idempotent: a rule already granted on the current client
+   * only swaps its handler, so re-running `startAll` after a reconnect does not
+   * stack duplicate requests (the second would be refused as in-use).
+   * @param {object} host - stored host row.
+   * @param {string} bindHost - address to bind *on the server*.
+   * @param {number} bindPort - port to bind on the server.
+   * @param {(stream: import('stream').Duplex, details: object) => void} onConnection - inbound sink.
+   * @returns {Promise<number>} the granted port (differs from `bindPort` only when it was 0).
+   */
+  async requestRemoteForward(host, bindHost, bindPort, onConnection) {
+    const client = await this.ensure(host)
+    const registry = this.#reverse.get(host.id) ?? new Map()
+    this.#reverse.set(host.id, registry)
+    const key = `${bindHost}:${bindPort}`
+    const existing = registry.get(key)
+    if (existing !== undefined && existing.client === client && existing.granted !== undefined) {
+      existing.onConnection = onConnection
+      existing.error = undefined
+      return existing.granted
+    }
+    const entry = existing ?? { bindHost, bindPort }
+    entry.client = client
+    entry.onConnection = onConnection
+    entry.error = undefined
+    entry.granted = undefined
+    registry.set(key, entry)
+    try {
+      const granted = await call(client, 'forwardIn', bindHost, bindPort)
+      entry.granted = typeof granted === 'number' && granted > 0 ? granted : bindPort
+      return entry.granted
+    } catch (error) {
+      entry.error = error?.message ?? String(error)
+      throw new RemoteError(
+        'remote-forward-denied',
+        `服务器不允许监听 ${bindHost}:${bindPort}：${entry.error}。sshd 需要允许 AllowTcpForwarding，绑定非回环地址还需要 GatewayPorts`,
+        502,
+      )
+    }
+  }
+
+  /** Stop asking the server to listen, and forget the registration. */
+  async releaseRemoteForward(host, bindHost, bindPort) {
+    const registry = this.#reverse.get(host.id)
+    if (registry === undefined) return
+    const key = `${bindHost}:${bindPort}`
+    const entry = registry.get(key)
+    if (entry === undefined) return
+    registry.delete(key)
+    if (registry.size === 0) this.#reverse.delete(host.id)
+    const client = this.#records.get(host.id)?.client
+    if (client === undefined || entry.granted === undefined) return
+    await call(client, 'unforwardIn', bindHost, entry.granted).catch(() => {})
+  }
+
+  /**
+   * Live state of one reverse registration, for the panel.
+   * @param {string} hostId - owning host.
+   * @param {string} bindHost - bound address.
+   * @param {number} bindPort - requested port.
+   * @returns {{granted?: number, error?: string, held: boolean}|undefined} state, or
+   *   `undefined` when unregistered. `held` is false once the client that owned
+   *   the granted port is gone: the server-side listener died with it.
+   */
+  remoteForwardState(hostId, bindHost, bindPort) {
+    const entry = this.#reverse.get(hostId)?.get(`${bindHost}:${bindPort}`)
+    if (entry === undefined) return undefined
+    return {
+      granted: entry.granted,
+      error: entry.error,
+      held: entry.client !== undefined && entry.client === this.#records.get(hostId)?.client && entry.granted !== undefined,
+    }
+  }
+
+  /**
+   * Route one inbound `forwarded-tcpip` channel to its rule.
+   *
+   * Matching is by destination port alone: the server cannot have two forwards
+   * on one port, and when the bind address is a wildcard the reported `destIP`
+   * is whichever interface the peer reached — not something the rule named.
+   */
+  #attachInbound(hostId, client) {
+    client.on('tcp connection', (details, accept, reject) => {
+      const registry = this.#reverse.get(hostId)
+      const entry = registry === undefined
+        ? undefined
+        : [...registry.values()].find((item) => item.granted === details.destPort && item.client === client)
+      if (entry === undefined || entry.onConnection === undefined) {
+        reject()
+        return
+      }
+      let stream
+      try {
+        stream = accept()
+      } catch {
+        reject()
+        return
+      }
+      entry.onConnection(stream, details)
+    })
+  }
+
+  /**
+   * Re-request every reverse forward for a fresh client.
+   *
+   * The listening sockets are on the server and were destroyed with the previous
+   * connection, so a rule that says "listening" is a lie until this runs. A
+   * failure here (port taken by someone else in the meantime) is recorded on the
+   * entry rather than thrown: it must not turn a working connection into a
+   * failed one, and the panel polls `remoteForwardState` to show it.
+   */
+  async #rearmReverse(hostId, client) {
+    const registry = this.#reverse.get(hostId)
+    if (registry === undefined) return
+    for (const entry of registry.values()) {
+      entry.client = client
+      entry.granted = undefined
+      entry.error = undefined
+      try {
+        const granted = await call(client, 'forwardIn', entry.bindHost, entry.bindPort)
+        entry.granted = typeof granted === 'number' && granted > 0 ? granted : entry.bindPort
+      } catch (error) {
+        entry.error = error?.message ?? String(error)
+      }
+    }
   }
 }
