@@ -20,7 +20,8 @@ DSH（DeepSeek Harness）的远程 SSH 插件：在侧边栏里看远端文件�
 ```
 src/               宿主端：HTTP API、WebSocket 终端、SSH 连接池、文件/传输/同步、端口转发
 client/            浏览器端：一个 Workspace 面板 + 五个视图 + 两个入口（better-sidebar 标签页 / 原生右侧边栏）
-lib/client.js      构建产物（esbuild 打包，由宿主按 /plugins/... 提供）
+lib/client.js      构建产物：客户端 bundle（esbuild 打包，由宿主按插件名提供）
+lib/server.mjs     构建产物：宿主端 bundle（ssh2 / ws / chokidar 全打进来，包里零运行期依赖）
 docs/design.md     架构取舍、平台发现、问题清单、里程碑
 ui/prototype.html  UI 原型（单文件，浏览器直接打开，可切深色）——界面以它为准
 test/              六组测试（见下）
@@ -46,7 +47,7 @@ scripts/           对着真实服务器跑的验收脚本
 
 ```bash
 npm run pack:rel     # 生成 dist/dsh-remote-ssh-<版本>.tgz
-dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.3.0.tgz"
+dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.3.1.tgz"
 ```
 
 `-w` 不能省：profile 里有 `pnpm-workspace.yaml`，pnpm 认为根是 workspace root，不带 `-w` 会报 `ERR_PNPM_ADDING_TO_ROOT`。
@@ -55,8 +56,12 @@ dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.3.0.tgz"
 
 ```json
 "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-remote-ssh"] } },
-"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-0.3.0.tgz" }
+"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-0.3.1.tgz" }
 ```
+
+**不要解压 tgz 后指向解压出来的目录。** pnpm 会把本地目录写成 `link:`，而链接进来的目录不会安装它自己的依赖 —— 一旦插件还有 `dependencies`，宿主端第一次 `import` 就会 `ERR_MODULE_NOT_FOUND`，整个插件停用，界面上只留一句「启用失败」。
+
+`0.3.1` 起这条坑已经填了：发布包里**没有任何运行期依赖**。`ssh2`、`ws`、`chokidar` 全部被 esbuild 打进 `lib/server.mjs`（约 980 KiB），装到哪都一样能跑，`link:` 也行。所以包里 `dependencies` 是空的，`ssh2` 也不再在安装期尝试编译原生模块。
 
 然后启动（app 参数直接跟在后面，不要写 `web`）：
 
@@ -125,15 +130,15 @@ ssh -L 6379:127.0.0.1:6379 me@server
 ## 验证
 
 ```bash
-npm test             # 先自动 build，再跑六组 Node 测试
+npm test             # 先自动 build（两个 bundle），再跑七轮 Node 测试
 ```
 
-`npm test` 有 `pretest` 钩子，会先重建 `lib/client.js` —— 否则渲染测试可能跑在旧产物上，改了代码却仍报绿。
+`npm test` 有 `pretest` 钩子，会先重建两个 bundle —— 否则渲染测试可能跑在旧产物上，改了代码却仍报绿。
 
 | 套件 | 覆盖 |
 | --- | --- |
 | `test/smoke.mjs` | 路由、主机、映射、转发规则的增删与校验、落盘、排除规则、终端帧 |
-| `test/ssh.mjs` | 握手、认证、exec、PTY、TOFU、错误分类、连接复用 |
+| `test/ssh.mjs` | 握手、认证、exec、PTY、TOFU、错误分类、连接复用。跑两遍：一遍对 `src/`，一遍对 `lib/server.mjs`（`--bundle`），证明内联进来的 `ssh2` 还能握手 |
 | `test/files.mjs` | 列表、文本守卫、原子写、陈旧检测、目录操作 |
 | `test/forward.mjs` | 真实 TCP 往返穿透 `direct-tcpip`、字节统计、端口占用、停止后拒绝、autoStart、落盘无密码 |
 | `test/render.mjs` | 用真实 React（`react-dom/server`）渲染五个视图 + 连接门四态 + 原生工作区，并断言密码框存在（issue #2），捕捉只在渲染时炸的错 |
