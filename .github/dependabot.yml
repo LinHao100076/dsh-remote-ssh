@@ -1,0 +1,29 @@
+version: 2
+
+updates:
+  # action 的大版本会跟着 runner 的 Node 版本走（v4 跑在 Node 20 上已经被弃用警告了），
+  # 与其等 GitHub 提示，不如让它自己提 PR。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # ssh2 / xterm / chokidar 这些都会被 build.mjs 打进 lib/。
+  # 依赖一升级，bundle 就变了：CI 的「lib/ 必须与源码同步」会拦住，
+  # 本地跑一遍 npm run build 再提交即可，不是真失败。
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 4
+    commit-message:
+      prefix: "chore"
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types: ["minor", "patch"]

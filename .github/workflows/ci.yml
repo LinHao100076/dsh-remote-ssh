@@ -22,12 +22,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        # 20 是 engines 的下界（宁可在这里红，也别让用户装上去才知道装不起来）；
+        # 22 是上一次的默认；24 是现在的 Active LTS，GitHub 托管 runner 自己就装在 24 上。
+        node: ['20', '22', '24']
 
     steps:
-      - uses: actions/checkout@v4
+      # 跑在 v4 上时 runner 会警告「Node.js 20 已弃用，本 action 被强制跑在 Node 24」。
+      # 这里用的 action 都是官方那几个、都在为 Node 24 做准备，所以直接跟到当前大版本。
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: npm
