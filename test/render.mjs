@@ -123,6 +123,7 @@ assert.match(connecting, /建立 SSH 通道/, 'the handshake names what it is do
 const files = render('files')
 assert.match(files, /rs-bar/, 'files pane renders its toolbar')
 assert.match(files, /rs-tree/, 'files pane renders its tree')
+assert.match(files, /在远端搜索内容/, 'files pane offers remote content search')
 
 const terminal = render('terminal')
 assert.match(terminal, /rs-ttabs/, 'terminal pane renders its tab strip')

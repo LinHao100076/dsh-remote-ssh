@@ -171,6 +171,7 @@ export const CSS = `
 }
 .rs-icon:hover:not(:disabled) { background: var(--rs-hover); color: var(--rs-fg); }
 .rs-icon:disabled { opacity: .4; }
+.rs-icon.on { background: var(--rs-accent-soft); color: var(--rs-accent); }
 
 .rs-field { display: grid; gap: 4px; min-width: 0; }
 .rs-field > label { font-size: 11px; color: var(--rs-fg3); }
@@ -280,6 +281,54 @@ export const CSS = `
 }
 .rs-hintbar button { color: var(--rs-fg3); font-size: 10.5px; }
 .rs-hintbar button:hover { color: var(--rs-fg); }
+
+/* ── remote content search ──────────────────────────────────────────── */
+.rs-search { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rs-sfield {
+  display: flex; align-items: center; gap: 6px; margin: 8px 12px 0; padding: 0 8px; height: 30px;
+  border-radius: 7px; border: 1px solid var(--rs-line2); background: var(--rs-bg); flex: none;
+}
+.rs-sfield:focus-within { border-color: var(--rs-accent); box-shadow: 0 0 0 3px var(--rs-accent-soft); }
+.rs-sico { color: var(--rs-fg3); flex: none; }
+.rs-sinput {
+  flex: 1; min-width: 0; height: 28px; border: 0; background: transparent; outline: none;
+  color: var(--rs-fg); font: 12px var(--rs-mono);
+}
+.rs-sinput::placeholder { color: var(--rs-fg3); }
+.rs-sx { flex: none; width: 18px; height: 18px; border-radius: 4px; display: grid; place-items: center; color: var(--rs-fg3); }
+.rs-sx:hover { background: var(--rs-hover); color: var(--rs-fg); }
+
+.rs-sopts { display: flex; align-items: center; gap: 5px; padding: 7px 12px 5px; flex: none; }
+.rs-stog {
+  height: 20px; min-width: 22px; padding: 0 5px; border-radius: 5px; border: 1px solid var(--rs-line2);
+  background: var(--rs-bg); color: var(--rs-fg3); font: 10.5px var(--rs-mono); flex: none;
+}
+.rs-stog:hover { color: var(--rs-fg); border-color: var(--rs-fg3); }
+.rs-stog.on { background: var(--rs-accent-soft); border-color: var(--rs-accent); color: var(--rs-accent); font-weight: 600; }
+.rs-snum {
+  margin-left: auto; font: 10.5px var(--rs-mono); color: var(--rs-fg3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.rs-sres { flex: 1; min-height: 0; overflow: auto; padding: 2px 6px 8px; }
+.rs-sgroup { margin-bottom: 4px; }
+.rs-sghead {
+  display: flex; align-items: center; gap: 5px; padding: 3px 6px; border-radius: 5px;
+  font: 11px var(--rs-mono); color: var(--rs-fg2); position: sticky; top: 0;
+  background: var(--rs-layer1); z-index: 1;
+}
+.rs-sghead .rs-fico { flex: none; color: var(--rs-fg3); }
+.rs-sgpath { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-sgn { flex: none; font-size: 10px; color: var(--rs-fg3); background: var(--rs-layer2); border-radius: 4px; padding: 0 4px; }
+.rs-shit {
+  display: flex; gap: 8px; padding: 2px 6px 2px 14px; border-radius: 5px;
+  font: 11px/1.62 var(--rs-mono); color: var(--rs-fg2);
+}
+.rs-shit:hover { background: var(--rs-hover); color: var(--rs-fg); }
+.rs-shit.sel { background: var(--rs-accent-soft); color: var(--rs-fg); }
+.rs-shn { flex: none; width: 34px; text-align: right; color: var(--rs-fg3); font-variant-numeric: tabular-nums; }
+.rs-sht { flex: 1; min-width: 0; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.rs-mark { background: var(--rs-warn-soft); color: var(--rs-warn); border-radius: 3px; padding: 0 1px; }
 
 /* ── cards (sync / forward / settings) ──────────────────────────────── */
 .rs-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
