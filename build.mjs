@@ -29,8 +29,9 @@
  *
  * - `ssh2` probes for an optional native crypto binding (`*.node`) and for
  *   `cpu-features`; `ws` probes for `bufferutil` / `utf-8-validate`. All of them
- *   are optional fast paths guarded by try/catch, so they are replaced with
- *   stubs — the portable JS path is what runs.
+ *   are optional fast paths guarded by try/catch, so they are made to fail to
+ *   load and the portable JS path is what runs. They must *throw*, not export an
+ *   empty object — see `stubOptionalNatives` for the crash that taught us.
  * - `__dirname` / `__filename` do not exist in an ES module, and both `ssh2`
  *   and its vendored emscripten blob reference them. A banner re-creates them
  *   from `import.meta.url`.
@@ -45,10 +46,26 @@ const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 const minify = process.argv.includes('--minify')
 
 /**
- * Replace optional native modules with an empty object.
+ * Make optional native modules fail to load.
  *
- * Everything they guard is `try { require(x) } catch {}`, so an empty export is
- * exactly what a machine without the optional package sees.
+ * These packages are native addons (`node-gyp`) and cannot live in a bundle.
+ * They must **throw**, not export an empty object: both consumers test for the
+ * package by calling it, not by checking the shape.
+ *
+ *   ws  → `bufferutil`: a successful require *replaces* ws's own pure-JS
+ *        mask/unmask with wrappers that delegate to `bufferutil.mask` for
+ *        payloads ≥ 48 bytes. An empty object makes the require succeed, so ws
+ *        keeps the wrapper and the first large frame throws
+ *        `TypeError: bufferUtil.unmask is not a function` — inside the socket's
+ *        `data` handler, i.e. an uncaught exception that takes the whole host
+ *        process down. That shipped in 0.3.1 and is issue #4.
+ *   ssh2 → `cpu-features`: `require('cpu-features')()` — the call itself throws
+ *        on an empty object, which only survives because it sits in the same
+ *        try/catch.
+ *
+ * A module body that throws is what a machine without the optional package
+ * looks like: every consumer's `try { require(x) } catch {}` catches it and
+ * keeps its portable path.
  * @returns {import('esbuild').Plugin}
  */
 function stubOptionalNatives() {
@@ -60,8 +77,8 @@ function stubOptionalNatives() {
       pluginBuild.onResolve({ filter: /^[^./]/ }, (args) =>
         optional.has(args.path) ? { path: args.path, namespace: 'stub-native' } : undefined,
       )
-      pluginBuild.onLoad({ filter: /.*/, namespace: 'stub-native' }, () => ({
-        contents: 'module.exports = {};',
+      pluginBuild.onLoad({ filter: /.*/, namespace: 'stub-native' }, (args) => ({
+        contents: `throw new Error(${JSON.stringify(`optional native module ${args.path} is not bundled`)});`,
         loader: 'js',
       }))
     },

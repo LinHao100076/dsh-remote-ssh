@@ -430,3 +430,42 @@ function injectStyles(id, css) {
 2. **文本不一致就覆盖**。`syncStyle` 比较 `existing.textContent !== css`，不一致就地改写；避免旧表永久遮蔽新面板。
 
 留在 `client/inject-styles.js`，不 import 任何 CSS，于是 `test/styles.mjs` 能在纯 Node 下用假 document 直接跑：注入、幂等（同一节点、不重复追加）、旧表就地刷新（issue #3 的回归）、跨 document 不串味、没有 head 不抛。`apply()` 里的一次性注入保留，作为首屏兜底。
+
+### 8.11 可选原生模块必须「加载即抛」，不能是空对象（v0.3.3，issue #4）
+
+用户点「终端」的一瞬间，整个桌面应用报「应用无法启动或已意外停止」。崩溃日志落在 `%APPDATA%/@deepseek-ai/dsh-desktop/logs/crash-*-host.log`，一行就够：
+
+```
+Error: dsh desktop host exited with 1: dsh: fatal uncaught exception:
+TypeError: bufferUtil.unmask is not a function
+    at module.exports.unmask (lib/server.mjs:146:27)
+    at Receiver2.getData (lib/server.mjs:1204:13)
+    at Receiver2.startLoop (lib/server.mjs:952:20)
+    at Receiver2._write (lib/server.mjs:890:14)
+    at Socket.socketOnData ...
+```
+
+这是 0.3.1「宿主端也打包」时我埋的雷。当时把三个可选原生模块打桩成 `module.exports = {}`，理由是「它们都包在 try/catch 里，等价于没装」。这个理由对 ssh2 侥幸成立、对 ws 完全不成立：
+
+```js
+// ws/lib/buffer-util.js
+} else if (!process.env.WS_NO_BUFFER_UTIL) {
+  try {
+    const bufferUtil = require('bufferutil');
+    module.exports.unmask = (buffer, mask) => {
+      if (buffer.length < 32) _unmask(buffer, mask);
+      else bufferUtil.unmask(buffer, mask);      // ← 这里
+    };
+  } catch (e) {}                                  // ← require 成功就不进 catch
+}
+```
+
+ws 判断的是「require 成不成功」，不是「对象长什么样」。空对象让 require 成功，于是 ws **把自己本来正确的纯 JS 实现换成了转发给空壳的包装器**；帧长 ≥32 字节就调 `bufferUtil.unmask`，TypeError，而它抛在 socket 的 `data` 处理器里 —— 未捕获异常，宿主进程直接退出。终端一开，PTY 首屏 banner 轻松超过 32 字节，所以「点终端 = 崩」。
+
+（ssh2 那边是 `cpuInfo = require('cpu-features')()`：空对象一调用就抛，刚好被同一个 try/catch 兜住，纯属运气。）
+
+修法：把打桩改成**模块体直接 throw**。对 `require` 来说这就是「这台机器没有这个可选包」，每个使用方的 `try { require(x) } catch {}` 都会接住并保留自己的可移植路径 —— 这正是可选依赖本来的语义。
+
+为什么测试没抓到：整套测试里**没有一个真 WebSocket**。`test/smoke.mjs` 只校验帧编解码，`test/ssh.mjs` 只走 SSH 通道，`test/e2e-profile.mjs` 需要真 profile。于是补了 `test/ws.mjs`：用**构建产物里的** `WebSocketServer` 加一个真客户端对打，把 ws 分支的每个阈值两侧都压一遍（48 字节服务端 mask、32 字节 unmask、24 字节 UTF-8 校验，再加一条 200 KB 会被拆帧的）。为此 `src/index.js` 多导出 `WebSocketServer`，和 `SshPool` 同一个理由：只有真跑一遍才证明内联进来的副本没坏。用 0.3.1 的打桩构建跑这条测试，报的正是 `bufferUtil.unmask is not a function`。
+
+issue #4 还有后半段：「崩溃后终端只显示 bash 光标，但是无法输入」。那是宿主被拉起后旧 socket 已死、面板仍留着上一个 xterm 屏幕，`onData` 把每个按键都丢进一个已关闭的 socket。现在 `onclose` 会区分「自己关的」（`disposed`）与「被断开的」，后者往屏幕写一行 `[连接已断开]` 并把状态条切成错误态 + 「重连」按钮；`exit` 帧已经解释过原因的（`ended`）不重复报错。

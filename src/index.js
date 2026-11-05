@@ -29,16 +29,18 @@ import { formatBytes } from './util.js'
 export const name = 'dsh-remote-ssh'
 
 /**
- * Re-exported so the transport can be exercised through the *published* bundle
- * (`lib/server.mjs`) as well as through source: the bundle inlines `ssh2`, and a
- * handshake is the only honest proof that the inlined copy still works.
+ * Re-exported so the transports can be exercised through the *published* bundle
+ * (`lib/server.mjs`) as well as through source: the bundle inlines `ssh2` and
+ * `ws`, and a real handshake / a real frame is the only honest proof that the
+ * inlined copies still work. Issue #4 was a bundled-`ws` crash that no test
+ * could see because nothing ever pushed a frame through the bundle.
  */
-export { SshPool }
+export { SshPool, WebSocketServer }
 
 /** Routes, sessions and remote terminals need these services before mounting. */
 export const inject = ['webServer', 'sessions']
 
-const VERSION = '0.3.2'
+const VERSION = '0.3.3'
 
 /**
  * Mount the plugin.

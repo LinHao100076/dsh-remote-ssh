@@ -76,6 +76,10 @@ function TermSession({ ctx, sessionId, hostId, active, tmux }) {
   /* Build the emulator and the socket once per (host, nonce). */
   useEffect(() => {
     if (containerRef.current === null) return undefined
+    // `ended` — an `exit` frame already explained why the channel is closing.
+    // `disposed` — the cleanup below is closing it on purpose.
+    let ended = false
+    let disposed = false
     const container = containerRef.current
     const styles = getComputedStyle(container)
     const term = new Terminal({
@@ -144,6 +148,7 @@ function TermSession({ ctx, sessionId, hostId, active, tmux }) {
         return
       }
       if (frame.t === 'exit') {
+        ended = true
         term.write(`\r\n\x1b[2m[远端进程已退出${frame.code === null ? '' : ` · ${frame.code}`}]\x1b[0m\r\n`)
         setNotice('会话已结束，点「重连」开启新的会话')
         return
@@ -153,6 +158,14 @@ function TermSession({ ctx, sessionId, hostId, active, tmux }) {
     socket.onerror = () => setError('终端 WebSocket 断开')
     socket.onclose = () => {
       if (socketRef.current === socket) socketRef.current = undefined
+      // Unmounting closes the socket on purpose; anything else is the transport
+      // going away underneath us — a host restart (issue #4) most of all. The
+      // emulator keeps its last screen either way, so without this the pane sits
+      // there showing a live cursor while `onData` drops every keystroke into a
+      // socket that is already closed.
+      if (disposed) return
+      term.write('\r\n\x1b[2m[连接已断开]\x1b[0m\r\n')
+      if (!ended) setError('终端连接已断开——宿主可能已重启')
     }
 
     const dataDisposable = term.onData((data) => {
@@ -173,6 +186,7 @@ function TermSession({ ctx, sessionId, hostId, active, tmux }) {
     observer.observe(container)
 
     return () => {
+      disposed = true
       observer.disconnect()
       dataDisposable.dispose()
       socket.close()
