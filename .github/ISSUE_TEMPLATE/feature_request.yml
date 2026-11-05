@@ -1,0 +1,53 @@
+name: 功能建议
+description: 希望插件能做什么，或现在的做法太别扭
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提之前建议先扫一眼 [ROADMAP.md](https://github.com/LinHao100076/dsh-ssh-remote/blob/main/ROADMAP.md)：里面列了已经在队列里的，和明确不做的。
+
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 你在做什么的时候卡住了
+      description: 真实的工作流，不是抽象需求。「我在改远端 Node 服务，每次都要切窗口看日志」比「希望有更好的日志」有用。
+      placeholder: 我每天要在远端跑 build 再回来改代码，现在……
+    validations:
+      required: true
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: 现在怎么绕过去的
+      description: 这一栏最重要。说清现在的替代做法和它的代价，很多需求到这一步就会发现绕法够用，或者真正缺的其实是另一样东西。
+      placeholder: 现在开两个终端，一个 ssh 一个跑 build，手动复制路径。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望它长什么样
+      description: 界面在哪、点了发生什么。有草图更好。
+    validations:
+      required: false
+
+  - type: textarea
+    id: cost
+    attributes:
+      label: 不做会怎样
+      description: 少了这个你会损失什么？这句决定了它的排期。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 自查
+      options:
+        - label: 这个需求不需要新增运行期依赖（包里必须是零依赖，见 CONTRIBUTING）
+          required: true
+        - label: 这不是「把插件做成完整 SSH 客户端」类的要求（这类明确不做）
+          required: true

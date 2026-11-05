@@ -1,8 +1,29 @@
 # dsh-remote-ssh
 
+[![CI](https://github.com/LinHao100076/dsh-ssh-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/LinHao100076/dsh-ssh-remote/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)](package.json)
+[![DSH](https://img.shields.io/badge/dsh-0.2.0--rc.2-5b6ee1.svg)](package.json)
+
 DSH（DeepSeek Harness）的远程 SSH 插件：在侧边栏里看远端文件系统、开远端终端、把远端服务映射到本机，本地改动自动上传、远端文件可下载，并与 `dsh-better-sidebar` 联动。
 
-当前状态：**B 版已实现并通过端到端验证**（本地镜像 + 旁挂远端通道，本地为真相）。`v0.1.0` 覆盖文件/终端/同步，`v0.2.1` 增加不依赖 better-sidebar 的原生入口，`v0.3.0` 把界面重做成与 `ui/prototype.html` 一致，并补上密码输入与主机切换。
+<p>
+  <img src="docs/assets/files.png" width="330" alt="文件视图：远端文件树 + 预览 + 上传下载">
+  <img src="docs/assets/terminal.png" width="330" alt="终端：tmux 持久会话，刷新后接回同一个 shell">
+</p>
+
+当前版本 **`0.6.0`**。`0.4.0` 加远端内容搜索，`0.5.0` 加断点续传，`0.6.0` 补上 socks5 动态转发与 `-R` 反向转发。完整变更见 [CHANGELOG](CHANGELOG.md)，下一步见 [ROADMAP](ROADMAP.md)。
+
+## 文档
+
+| 文件 | 内容 |
+| --- | --- |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发环境、分支与提交约定、测试底线、PR 前自查 |
+| [SECURITY.md](SECURITY.md) | 安全模型（凭据怎么存）、已知风险面、私密报告渠道 |
+| [ROADMAP.md](ROADMAP.md) | 打算做什么、明确不做什么 |
+| [CHANGELOG.md](CHANGELOG.md) | 每个版本改了什么 |
+| [docs/design.md](docs/design.md) | 架构取舍的长文档：为什么不做某些事、踩过的坑 |
+| [ui/prototype.html](ui/prototype.html) | 界面基准，单文件可直接打开 |
 
 ## 两个入口（better-sidebar 是可选的）
 
@@ -23,15 +44,18 @@ client/            浏览器端：一个 Workspace 面板 + 五个视图 + 两�
 lib/client.js      构建产物：客户端 bundle（esbuild 打包，由宿主按插件名提供）
 lib/server.mjs     构建产物：宿主端 bundle（ssh2 / ws / chokidar 全打进来，包里零运行期依赖）
 docs/design.md     架构取舍、平台发现、问题清单、里程碑
+docs/assets/       README 用的面板截图（由 ui/prototype.html 生成）
 ui/prototype.html  UI 原型（单文件，浏览器直接打开，可切深色）——界面以它为准
-test/              十二组测试（见下）
+test/              十三轮测试（见下）
 scripts/           对着真实服务器跑的验收脚本；`dev-remote.mjs` 是本地假远端（exec 走真 shell，SFTP 只读）
 ```
 
 ## 先看原型
 
-双击 `ui/prototype.html`。顶栏可切换界面状态：连接页 / 连接中 / 文件 / 终端 / 同步 / 转发 / 设置 / 错误。
+双击 `ui/prototype.html`。顶栏可切换界面状态：连接页 / 连接中 / 文件 / 终端 / 同步 / 设置 / 错误。
 也支持 `?view=terminal`、`?view=sync` 等直达链接。
+
+> 原型里没有「转发」视图 —— 端口转发晚于原型（`v0.2.0`），那一屏是照着原型的 token 与栅格补的，没有回填进原型。改转发界面时以 `client/forward-view.jsx` 和 `client/styles.js` 为准。
 
 面板按原型的 424px 设计，宽度跟着右侧栏走；原型里的深色版本通过 `light-dark()` 复用同一套 token，自动跟随 DSH 的主题。
 
@@ -132,6 +156,8 @@ SOCKS5 只实现 `CONNECT`。`BIND` 和 `UDP ASSOCIATE` 会明确回 `0x07 comma
 
 ## 路径映射与同步语义
 
+<img src="docs/assets/sync.png" width="330" alt="同步视图：按映射的推/拉状态、冲突与队列">
+
 - **默认单向**：本地 → 远端（agent 改的文件自动推上去）。按映射开双向后，远端变更才会被下载。
 - **本地是真相**：冲突判定 = 本地改过 **且** 远端 mtime 相对基线漂移超过 2s；冲突只报告，不自动裁决，由 UI 给「保留本地 / 保留远端 / 忽略」。
 - **删除不传播**：本地删除只在队列里记一笔，绝不会在远端 `rm`。
@@ -223,19 +249,21 @@ git tag -a v0.3.0 -m "v0.3.0 —— 远端搜索"      # 发版
 npm run pack:rel      # 先跑 build，再 npm pack 到 dist/
 ```
 
-`prepack` 钩子保证打包前一定重建 `lib/client.js`，所以包里不会出现旧产物。包内只含运行期需要的东西：`src/`、`lib/client.js`、`cordis.patch.yml`、`README.md`、`package.json`（18 个文件，约 140 KB）。`dist/` 不进版本库——它可以从任何一个标签重新生成。
+`prepack` 钩子保证打包前一定重建 `lib/client.js`，所以包里不会出现旧产物。包内只含运行期需要的东西：`src/`、`lib/client.js`、`lib/server.mjs`、`cordis.patch.yml`、`README.md`、`LICENSE`、`package.json`（23 个文件，约 376 KB）。`dist/` 不进版本库——它可以从任何一个标签重新生成。
 
 `test/`、`scripts/`、`docs/` 不进包，所以装到别处后跑不了 `npm test`；要在包装好的产物上验证，就在源码目录里跑。
 
-### 推到 GitHub
-
-仓库目前只做了本地初始化，没有配远程。联网后执行：
+### 发版流程
 
 ```bash
-git remote add origin git@github.com:<你的账号>/dsh-remote-ssh.git
-git push -u origin main
-git push --tags          # 标签不会跟着 main 自动推，必须单独推
+git tag -a v0.x.0 -F -        # 标签说明写两点：凭什么算可用、还差什么
+git push origin main
+git push origin v0.x.0        # 标签不会跟着 main 自动推，必须单独推
 ```
+
+然后在 GitHub 上发 Release 并附上 `dist/dsh-remote-ssh-<版本>.tgz`。标签说明是这个项目最重要的一份文档：它记录的是「在这个时间点，什么被验证过、什么还没有」，比 CHANGELOG 更细。
+
+分支不用手工清理：合完的分支一律保留并推到远端（见 [CONTRIBUTING.md](CONTRIBUTING.md)）。
 
 ## 环境
 
@@ -274,3 +302,17 @@ dsh plugin --profile <name> allow-version dsh-better-sidebar@0.28.0 \
 | 入口按钮 | `conversation.session.header.utilities` 槽（list 槽，用 `id`），点击调 `sidebarRight.openTab('dsh-remote-ssh')` |
 | 读取服务 | 客户端 ctx 是 Proxy，**未 `inject` 的服务读属性会抛** `cannot get property "x" without inject`；一律用 `ctx.get(name)` |
 | 路由前缀 | HTTP 用 `document.baseURI`（反代前缀跟着走）；桌面壳页面是 `dsh-app://`，WebSocket 必须改用 `__DSH_TRANSPORT__.streamBaseUrl` |
+
+## 参与贡献
+
+欢迎 issue，尤其是**带复现路径的 bug**：现象 + 截图 + 点哪里出错，三样齐了基本当场能定位。
+
+- 想改代码：先读 [CONTRIBUTING.md](CONTRIBUTING.md)。两条硬规则在那儿 —— 界面以 `ui/prototype.html` 为准、包里零运行期依赖。
+- 安全相关：走 [SECURITY.md](SECURITY.md) 的私密渠道，不要开 public issue。
+- 想提功能：先看 [ROADMAP.md](ROADMAP.md)，里面既有已经排队的，也有明确不做的。
+
+`npm test` 是这个仓库的底线：十三轮全绿才合。关键协议（转发、SOCKS5、终端 WebSocket）不许用测试桩替代，历史上就是这么漏掉过一个「一点终端就崩宿主」的 bug。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 LinHao100076
