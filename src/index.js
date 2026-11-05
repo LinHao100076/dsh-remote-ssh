@@ -28,10 +28,17 @@ import { formatBytes } from './util.js'
 
 export const name = 'dsh-remote-ssh'
 
+/**
+ * Re-exported so the transport can be exercised through the *published* bundle
+ * (`lib/server.mjs`) as well as through source: the bundle inlines `ssh2`, and a
+ * handshake is the only honest proof that the inlined copy still works.
+ */
+export { SshPool }
+
 /** Routes, sessions and remote terminals need these services before mounting. */
 export const inject = ['webServer', 'sessions']
 
-const VERSION = '0.3.0'
+const VERSION = '0.3.1'
 
 /**
  * Mount the plugin.
