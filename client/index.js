@@ -1,53 +1,54 @@
 /**
- * dsh-remote-ssh client half: two independent ways into the same four panes.
+ * dsh-remote-ssh client half: one tab, one panel, five panes.
  *
- * - With better-sidebar installed, each pane is one of its tabs (id
- *   `dsh-remote-ssh:<pane>`), which is the integration that plugin users expect.
- * - Without it — the peer is optional, and disabling it used to make this plugin
- *   vanish from the sidebar entirely — the plugin registers a page type with
- *   DSH's own right sidebar (`sidebarRightTabs`) and paints one workspace panel
- *   behind a header button. Nothing in that path touches better-sidebar.
+ * Two entry points, one experience:
+ *
+ * - better-sidebar installed → a single tab titled "远程 SSH" (issue #1 asked
+ *   for exactly that: the four separate tabs made the sidebar feel like four
+ *   plugins). `Workspace` renders inside it.
+ * - better-sidebar absent or disabled → the same `Workspace` in DSH's own right
+ *   sidebar, opened from a conversation-header button. Nothing in this path
+ *   touches better-sidebar.
  *
  * The two are mutually exclusive per activation: the native entry is registered
- * first and handed over when better-sidebar's service arrives, so a profile with
- * both never shows two competing entries.
+ * first and handed over when better-sidebar's service arrives later, so a
+ * profile with both never shows two competing entries.
  *
- * All transport work happens in the host half. Styling is injected once from the
- * factory (xterm's own CSS included), which is the bundling convention for client
- * modules: no separate stylesheet URL is served.
+ * Styling is injected once from the factory (xterm's own CSS included), which is
+ * the bundling convention for client modules: no separate stylesheet URL is
+ * served.
  * @module dsh-remote-ssh/client
  */
 import { createElement as h } from 'react'
 import xtermCss from '@xterm/xterm/css/xterm.css'
 import { CSS } from './styles.js'
-import { Icon } from './ui.js'
-import { FilesPane } from './files-view.js'
-import { ForwardPane } from './forward-view.js'
-import { SyncPane } from './sync-view.js'
-import { TerminalPane } from './terminal-view.js'
-import { KIND, RemoteHeaderButton, RemoteWorkspace } from './native-view.js'
+import { Icon } from './ui.jsx'
+import { KIND, RemoteHeaderButton, Workspace } from './workspace.jsx'
+import { ConnectView } from './connect-view.jsx'
+import { FilesPane } from './files-view.jsx'
+import { ForwardPane } from './forward-view.jsx'
+import { SettingsPane } from './settings-view.jsx'
+import { SyncPane } from './sync-view.jsx'
+import { TerminalPane } from './terminal-view.jsx'
 
-/** Tab type ids, prefixed with the package name to stay collision-free. */
-export const TABS = {
-  files: 'dsh-remote-ssh:files',
-  terminal: 'dsh-remote-ssh:terminal',
-  sync: 'dsh-remote-ssh:sync',
-  forward: 'dsh-remote-ssh:forward',
-}
+/** The one better-sidebar tab. */
+export const TABS = { remote: KIND }
 
 /**
- * Panel components, exposed so the render test can mount them without a real
- * side-bar. Registering a tab is the only production use.
+ * Panes, exposed so the render test can mount them without a side-bar.
+ * `connect` is the gate the workspace shows before there is a tunnel.
  */
 export const PANES = {
   files: FilesPane,
   terminal: TerminalPane,
   sync: SyncPane,
   forward: ForwardPane,
+  settings: SettingsPane,
+  connect: ConnectView,
 }
 
-/** The native workspace panel and its header opener (see `native-view.js`). */
-export const NATIVE = { KIND, RemoteWorkspace, RemoteHeaderButton }
+/** The native workspace panel and its header opener (see `workspace.jsx`). */
+export const NATIVE = { KIND, RemoteWorkspace: Workspace, RemoteHeaderButton }
 
 /** Inject a stylesheet once per document. */
 function injectStyles(id, css) {
@@ -58,60 +59,28 @@ function injectStyles(id, css) {
   document.head.append(style)
 }
 
-/** Tab icon factory (20px box, host theme colour). */
+/** Tab icon factory (host theme colour, size adapts to the strip). */
 function tabIcon(name) {
   return (size) => h(Icon, { name, size: size ?? 16 })
 }
 
 /**
- * Register one better-sidebar tab.
+ * Register the single better-sidebar tab.
  *
  * `registerTab` throws on a duplicate id, and both a hot reload and a second
  * mount can run `apply` again before the previous effects are disposed. Skipping
  * an id that is already registered keeps a reload from taking the panel down.
  */
-function mountTab(ctx, service, descriptor) {
-  if (typeof service.getTab === 'function' && service.getTab(descriptor.id) !== undefined) return
-  ctx.effect(() => service.registerTab(descriptor))
-}
-
-/** Register the four pens as better-sidebar tabs. */
-function registerTabs(ctx, service) {
-  mountTab(ctx, service, {
-    id: TABS.files,
-    title: () => '远程',
-    description: '远端文件树、上传下载、连接管理',
+function mountTab(ctx, service) {
+  if (typeof service.getTab === 'function' && service.getTab(KIND) !== undefined) return
+  ctx.effect(() => service.registerTab({
+    id: KIND,
+    title: () => '远程 SSH',
+    description: '远端文件、终端、同步与端口转发',
     icon: tabIcon('server'),
     order: 46,
-    component: (props) => h(FilesPane, props),
-  })
-
-  mountTab(ctx, service, {
-    id: TABS.terminal,
-    title: () => '远程终端',
-    description: 'SSH 终端，有 tmux 时自动接管会话',
-    icon: tabIcon('terminal'),
-    order: 47,
-    component: (props) => h(TerminalPane, props),
-  })
-
-  mountTab(ctx, service, {
-    id: TABS.sync,
-    title: () => '同步',
-    description: '路径映射、自动上传、冲突处理',
-    icon: tabIcon('sync'),
-    order: 48,
-    component: (props) => h(SyncPane, props),
-  })
-
-  mountTab(ctx, service, {
-    id: TABS.forward,
-    title: () => '转发',
-    description: '本地端口转发，把远端服务映射到本机',
-    icon: tabIcon('link'),
-    order: 49,
-    component: (props) => h(ForwardPane, props),
-  })
+    component: (props) => h(Workspace, props),
+  }))
 }
 
 /** Run a disposer, reporting rather than propagating a teardown failure. */
@@ -171,7 +140,7 @@ function mountNative(ctx) {
       name: 'sidebar.right.pane.tab',
       key: KIND,
       inject: (sessionId) => ({ ctx: inner, sessionId }),
-    }, RemoteWorkspace)))
+    }, Workspace)))
 
     disposers.push(slots.inject('conversation.session.header.utilities', () => slots.register({
       name: 'conversation.session.header.utilities',
@@ -200,7 +169,7 @@ export function apply(ctx) {
 
   const present = typeof ctx.get === 'function' ? ctx.get('betterSidebar') : undefined
   if (present !== undefined) {
-    registerTabs(ctx, present)
+    mountTab(ctx, present)
     return
   }
 
@@ -220,11 +189,11 @@ export function apply(ctx) {
       const service = typeof inner.get === 'function' ? inner.get('betterSidebar') : inner.betterSidebar
       if (service === undefined) return
       disposeNative()
-      registerTabs(ctx, service)
+      mountTab(ctx, service)
     })
     return
   }
 
   const service = ctx.get?.('betterSidebar')
-  if (service !== undefined) registerTabs(ctx, service)
+  if (service !== undefined) mountTab(ctx, service)
 }

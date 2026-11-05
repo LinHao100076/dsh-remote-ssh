@@ -173,17 +173,21 @@ function makeCtx({ sidebar, native } = {}) {
   return ctx
 }
 
-/* ── 1. better-sidebar present: the four tabs, and only those ─────────── */
+/* ── 1. better-sidebar present: one tab, and only that ────────────────── */
 
 {
   const sidebar = makeSidebar()
   const native = makeNative()
   exported.apply(makeCtx({ sidebar, native }))
   assert.deepEqual(
-    sidebar.getTabs().map((tab) => tab.id).sort(),
-    ['dsh-remote-ssh:files', 'dsh-remote-ssh:forward', 'dsh-remote-ssh:sync', 'dsh-remote-ssh:terminal'],
-    'better-sidebar gets the four tabs',
+    sidebar.getTabs().map((tab) => tab.id),
+    ['dsh-remote-ssh'],
+    'better-sidebar gets exactly one tab (issue #1)',
   )
+  const tab = sidebar.getTabs()[0]
+  assert.equal(tab.title(), '远程 SSH', 'the single tab is called 远程 SSH')
+  assert.equal(tab.order, 46)
+  assert.equal(typeof tab.component, 'function', 'the single tab renders the workspace')
   assert.equal(native.types.size, 0, 'no native entry while better-sidebar is there')
   assert.equal(native.entries.length, 0, 'no native slots while better-sidebar is there')
 }
@@ -259,7 +263,7 @@ function makeCtx({ sidebar, native } = {}) {
 
   assert.equal(native.types.size, 0, 'the native type is released on handover')
   assert.equal(native.entries.length, 0, 'the native slots are released on handover')
-  assert.equal(sidebar.getTabs().length, 4, 'better-sidebar takes over with its four tabs')
+  assert.equal(sidebar.getTabs().length, 1, 'better-sidebar takes over with its single tab')
 }
 
-console.log('native: ok (tabs vs native entry, silent without services, handover on late activation)')
+console.log('native: ok (one tab vs native entry, silent without services, handover on late activation)')

@@ -168,6 +168,27 @@ export function usePolling(active, ms, run) {
   }, [active, ms])
 }
 
+/** Stable-enough local id for terminal tabs and drafts. */
+export function uid(prefix = 'id') {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+/**
+ * One-message toast with an auto-clear timer.
+ * @returns {[string, (text: string) => void]} current message and its setter.
+ */
+export function useToast() {
+  const [message, setMessage] = useState('')
+  const timer = useRef(0)
+  const show = useCallback((text) => {
+    setMessage(text)
+    clearTimeout(timer.current)
+    timer.current = setTimeout(() => setMessage(''), 2200)
+  }, [])
+  useEffect(() => () => clearTimeout(timer.current), [])
+  return [message, show]
+}
+
 /** Async action runner with busy + error state. */
 export function useAction() {
   const [busy, setBusy] = useState(false)

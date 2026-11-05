@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>dsh-remote-ssh · 面板预览</title>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: #f4f5f7; font: 13px/1.5 ui-sans-serif, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  .stage { max-width: 1180px; margin: 0 auto; height: 100vh; display: flex; border-left: 1px solid #e6e8ec; border-right: 1px solid #e6e8ec; background: #fff; }
+  .context { flex: 1; min-width: 0; background: #f4f5f7; border-right: 1px solid #e6e8ec; overflow: hidden; }
+  .ctx-head { height: 42px; display: flex; align-items: center; padding: 0 18px; border-bottom: 1px solid #e6e8ec; color: #8d95a3; font-size: 11.5px; }
+  .ctx-body { padding: 26px; max-width: 620px; }
+  .msg { margin-bottom: 18px; }
+  .msg .who { font-size: 11px; color: #8d95a3; margin-bottom: 5px; }
+  .msg .bubble { background: #fff; border: 1px solid #e6e8ec; border-radius: 10px; padding: 10px 13px; color: #5c6472; line-height: 1.65; }
+  .msg.me { margin-left: auto; }
+  .msg.me .bubble { background: #e8f0ff; border-color: #ccdcff; color: #1c2028; }
+  .panel { width: 424px; flex: none; display: flex; flex-direction: column; border-left: 1px solid #e6e8ec; background: #fff; overflow: hidden; }
+  .banner { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); font-size: 11px; color: #5c6472; background: #fff; border: 1px solid #e6e8ec; border-radius: 999px; padding: 4px 12px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <section class="context">
+    <div class="ctx-head">DSH 会话 · 右侧栏插件渲染位（预览台，数据为假）</div>
+    <div class="ctx-body">
+      <div class="msg"><div class="who">你</div><div class="bubble">把 /srv/app 那台机器连上，改完的 main.ts 自动同步过去，然后跑一下测试。</div></div>
+      <div class="msg me"><div class="who">DSH</div><div class="bubble">已连上 prod-web-01。本地改动的 3 个文件正在上传，终端里开始跑了。</div></div>
+    </div>
+  </section>
+  <aside class="panel" id="root"></aside>
+</div>
+<div class="banner">预览数据来自 ui/preview.html 里的桩，不连接真实 SSH</div>
+
+<!-- React UMD, straight out of node_modules: this page never ships. -->
+<script src="../node_modules/react/umd/react.development.js"></script>
+<script src="../node_modules/react-dom/umd/react-dom.development.js"></script>
+<script>
+  // Stand-in for DSH's browser module table: keep the registration record.
+  window.__ModuleLoader__ = { load: (record) => { window.__record = record } }
+</script>
+<script src="../lib/client.js"></script>
+<script>
+(() => {
+  const HOSTS = [
+    { id: 'h1', name: 'prod-web-01', host: '10.0.3.21', port: 22, user: 'ubuntu', auth: { type: 'agent' } },
+    { id: 'h2', name: 'gpu-box', host: '192.168.7.4', port: 22, user: 'root', proxyJump: 'bastion', auth: { type: 'password' } },
+    { id: 'h3', name: 'staging', host: 'staging.internal', port: 22, user: 'deploy', auth: { type: 'key', keyPath: '~/.ssh/id_ed25519' } },
+  ]
+  const STATUSES = {
+    h1: { status: 'connected', since: Date.now() - 60000, tmux: true },
+    h2: { status: 'disconnected' },
+    h3: { status: 'disconnected' },
+  }
+  /* ?state=empty|password|connecting|error drives the connect gate. */
+  const scenario = new URLSearchParams(location.search).get('state')
+  if (scenario === 'empty') {
+    HOSTS.splice(0)
+    Object.keys(STATUSES).forEach((key) => { delete STATUSES[key] })
+  }
+  if (scenario === 'password') {
+    HOSTS.splice(0, HOSTS.length, HOSTS[1])
+    Object.keys(STATUSES).forEach((key) => { delete STATUSES[key] })
+    STATUSES.h2 = { status: 'disconnected' }
+  }
+  if (scenario === 'connecting') STATUSES.h1 = { status: 'connecting' }
+  if (scenario === 'error') STATUSES.h1 = { status: 'error', error: 'All configured authentication methods failed' }
+
+  const HOME = '/home/ubuntu'
+  const TREE = {
+    '/srv/app': [
+      { name: '.gitignore', path: '/srv/app/.gitignore', type: 'file', size: 43 },
+      { name: 'src', path: '/srv/app/src', type: 'dir', size: 4096 },
+      { name: 'tests', path: '/srv/app/tests', type: 'dir', size: 4096 },
+      { name: 'package.json', path: '/srv/app/package.json', type: 'file', size: 1284 },
+      { name: 'tsconfig.json', path: '/srv/app/tsconfig.json', type: 'file', size: 318 },
+      { name: 'node_modules', path: '/srv/app/node_modules', type: 'dir', size: 4096 },
+    ],
+    '/srv/app/src': [
+      { name: 'app', path: '/srv/app/src/app', type: 'dir', size: 4096 },
+      { name: 'index.ts', path: '/srv/app/src/index.ts', type: 'file', size: 2461 },
+      { name: 'style.css', path: '/srv/app/src/style.css', type: 'file', size: 812 },
+    ],
+    '/srv/app/src/app': [
+      { name: 'main.ts', path: '/srv/app/src/app/main.ts', type: 'file', size: 2458 },
+      { name: 'router.ts', path: '/srv/app/src/app/router.ts', type: 'file', size: 8294 },
+      { name: 'config.ts', path: '/srv/app/src/app/config.ts', type: 'file', size: 402 },
+    ],
+    '/srv/app/tests': [{ name: 'app.spec.ts', path: '/srv/app/tests/app.spec.ts', type: 'file', size: 2100 }],
+    '/srv/app/node_modules': [{ name: '.package-lock.json', path: '/srv/app/node_modules/.package-lock.json', type: 'file', size: 900 }],
+  }
+  const CODE = `import { createServer } from 'node:http'
+import { loadConfig } from './config.js'
+
+const cfg = loadConfig()  // port 8080
+
+createServer((req, res) => {
+  res.end('ok')
+}).listen(cfg.port)
+`
+  const MAPPINGS = [{
+    id: 'm1',
+    hostId: 'h1',
+    localRoot: 'C:/Users/Administrator/WorkBuddy/app',
+    remoteRoot: '/srv/app',
+    direction: 'push',
+    policy: 'save',
+    watching: true,
+    pending: 2,
+    conflicts: 1,
+  }]
+  const QUEUE = [
+    { id: 'q1', rel: 'src/app/main.ts', state: 'done', size: 2458, note: '已上传 42ms' },
+    { id: 'q2', rel: 'src/index.ts', state: 'uploading', size: 2461 },
+    { id: 'q3', rel: 'dist/bundle.js', state: 'skipped', size: 0, note: '已排除 · 不传输' },
+  ]
+  const CONFLICTS = [{
+    key: 'c1', rel: 'config/db.yml',
+    localMtimeMs: Date.now() - 60000, remoteMtimeMs: Date.now() - 420000,
+    localSize: 620, remoteSize: 590,
+  }]
+  const FORWARDS = [{
+    hostId: 'h1', hostName: 'prod-web-01', status: 'connected',
+    rules: [
+      { id: 'f1', local: '127.0.0.1:6379', target: '127.0.0.1:6379', localPort: 6379, remoteHost: '127.0.0.1', remotePort: 6379, bind: '127.0.0.1', state: 'listening', connections: 3, bytes: 182736, exposed: false },
+      { id: 'f2', local: '127.0.0.1:5432', target: '127.0.0.1:5432', localPort: 5432, remoteHost: '127.0.0.1', remotePort: 5432, bind: '127.0.0.1', state: 'stopped', connections: 0, bytes: 0, exposed: false },
+    ],
+  }]
+
+  const value = (payload) => ({ ok: true, value: payload })
+
+  const ROUTES = {
+    'hosts.list': () => ({ hosts: HOSTS, statuses: STATUSES }),
+    'hosts.sshConfig': () => ({ hosts: [
+      { alias: 'prod-web-01', host: '10.0.3.21', user: 'ubuntu', port: 22 },
+      { alias: 'gpu-box', host: '192.168.7.4', user: 'root', proxyJump: 'bastion' },
+      { alias: 'staging', host: 'staging.internal', user: 'deploy' },
+    ] }),
+    'hosts.status': () => ({ statuses: STATUSES }),
+    'hosts.info': () => ({ hostId: 'h1', info: { kernel: 'Ubuntu 22.04', home: HOME, tmux: true, shell: '/bin/zsh' } }),
+    'sync.list': () => ({ mappings: MAPPINGS, queue: QUEUE, conflicts: CONFLICTS, stats: { uploaded: 18, bytes: 1258291, failed: 0 } }),
+    'session.cwd': () => ({ cwd: 'C:/Users/Administrator/WorkBuddy/app' }),
+    'fs.list': (body) => {
+      const path = body.path === '' ? HOME : body.path
+      return { path, entries: TREE[path] ?? [], home: HOME, tmux: true }
+    },
+    'fs.read': () => ({ text: CODE, mtimeMs: Date.now() - 90000, size: CODE.length }),
+    'forward.list': () => ({ hosts: FORWARDS }),
+    'hosts.connect': () => { throw Object.assign(new Error('预览台不连接真实 SSH'), { code: 'preview' }) },
+    'hosts.disconnect': () => ({ hostId: 'h1', status: 'disconnected' }),
+  }
+
+  window.fetch = async (url, options) => {
+    const method = String(url).split('/remote/api/')[1] ?? ''
+    const body = options?.body ? JSON.parse(options.body) : {}
+    const handler = ROUTES[method]
+    if (handler === undefined) return { json: async () => ({ ok: false, error: { code: 'preview', message: `no stub for ${method}` } }) }
+    try {
+      return { json: async () => value(handler(body)) }
+    } catch (error) {
+      return { json: async () => ({ ok: false, error: { code: error.code ?? 'preview', message: error.message } }) }
+    }
+  }
+
+  /* A shell that prints a prompt, so the terminal pane can be judged without SSH. */
+  const OPEN = 1
+  class FakeSocket {
+    static OPEN = OPEN
+    constructor() {
+      this.readyState = 0
+      setTimeout(() => {
+        this.readyState = OPEN
+        this.onopen?.()
+        this.onmessage?.({ data: JSON.stringify({ t: 'ready', shell: '/bin/zsh', tmux: true }) })
+        this.onmessage?.({ data: JSON.stringify({ t: 'out', d: '\x1b[90mLast login: Wed Nov  5 14:20:11 2026 from 10.0.3.1\x1b[0m\r\n\u001b[32mubuntu@prod-web-01\u001b[0m:\u001b[34m/srv/app\u001b[0m $ ' }) })
+      }, 30)
+    }
+    send() {}
+    close() { this.readyState = 3 }
+  }
+  window.WebSocket = FakeSocket
+
+  const service = { hostRouteUrl: (path) => `preview/${path}`, registerTab: () => () => {}, getTab: () => undefined, openTab: () => {} }
+  const ctx = {
+    get: (name) => (name === 'betterSidebar' ? service : undefined),
+    effect: (fn) => { const out = fn(); return typeof out === 'function' ? out : () => {} },
+    inject: () => () => {},
+  }
+
+  const record = window.__record
+  const exports = record.factory((name) => {
+    if (name === 'react') return React
+    throw new Error(`unexpected require: ${name}`)
+  })
+  exports.apply(ctx)
+
+  const Workspace = exports.NATIVE.RemoteWorkspace
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    React.createElement(Workspace, { ctx, sessionId: 'preview' }),
+  )
+
+  /* Deep links for screenshots: ?view=sync|terminal|settings|forward|files
+     and ?open=src/app/main.ts to expand a path and select the file. */
+  const params = new URLSearchParams(location.search)
+  const LABEL = { files: '文件', terminal: '终端', sync: '同步', forward: '转发', settings: '设置' }
+  const clickText = (selector, text) => {
+    const node = [...document.querySelectorAll(selector)].find((item) => (item.textContent ?? '').includes(text))
+    node?.click()
+    return node !== undefined
+  }
+  const view = params.get('view')
+  if (view !== null && LABEL[view] !== undefined) {
+    setTimeout(() => clickText('.rs-tab', LABEL[view]), 250)
+  }
+  const open = params.get('open')
+  if (open !== null) {
+    const parts = open.split('/')
+    parts.forEach((part, index) => {
+      setTimeout(() => { clickText('.rs-row', part) }, 400 + index * 250)
+    })
+  }
+})()
+</script>
+</body>
+</html>

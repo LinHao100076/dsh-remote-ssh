@@ -2,33 +2,37 @@
 
 DSH（DeepSeek Harness）的远程 SSH 插件：在侧边栏里看远端文件系统、开远端终端、把远端服务映射到本机，本地改动自动上传、远端文件可下载，并与 `dsh-better-sidebar` 联动。
 
-当前状态：**B 版已实现并通过端到端验证**（本地镜像 + 旁挂远端通道，本地为真相）。`v0.1.0` 覆盖文件/终端/同步，`feat/port-forward` 增加端口转发，`v0.2.1` 增加不依赖 better-sidebar 的原生入口。
+当前状态：**B 版已实现并通过端到端验证**（本地镜像 + 旁挂远端通道，本地为真相）。`v0.1.0` 覆盖文件/终端/同步，`v0.2.1` 增加不依赖 better-sidebar 的原生入口，`v0.3.0` 把界面重做成与 `ui/prototype.html` 一致，并补上密码输入与主机切换。
 
 ## 两个入口（better-sidebar 是可选的）
 
 | 装了什么 | 出现在哪 | 怎么打开 |
 | --- | --- | --- |
-| 有 `dsh-better-sidebar` | better-sidebar 的侧栏，四个独立标签页（远程 / 远程终端 / 同步 / 转发） | 侧栏里点标签页 |
-| 没有 / 停用了 `dsh-better-sidebar` | DSH **自带的右侧边栏**，一个「远程 SSH」面板，面板内四个切换 | 会话头部右上角的服务器图标按钮 |
+| 有 `dsh-better-sidebar` | better-sidebar 的侧栏，**一个**名为「远程 SSH」的标签页 | 侧栏里点「远程 SSH」 |
+| 没有 / 停用了 `dsh-better-sidebar` | DSH **自带的右侧边栏**，同一个「远程 SSH」面板 | 会话头部右上角的服务器图标按钮 |
 
-两条路径互斥：如果 better-sidebar 在启动后才激活，插件会把原生入口撤掉、换成四个标签页，不会同时出现两个入口。
+无论走哪条路，面板都是同一个组件：主机头 + 一条标签条（文件 / 终端 / 同步 / 转发 / 设置）+ 状态栏。早先版本在 better-sidebar 里注册了四个标签页，把侧栏挤得很满，`v0.3.0` 起统一成一个（见 issue #1）。
+
+两条路径互斥：如果 better-sidebar 在启动后才激活，插件会把原生入口撤掉、换成同一个标签页，不会同时出现两个入口。
 
 ## 目录
 
 ```
 src/               宿主端：HTTP API、WebSocket 终端、SSH 连接池、文件/传输/同步、端口转发
-client/            浏览器端：四个面板 + 两个入口（better-sidebar 标签页 / 原生右侧边栏）
+client/            浏览器端：一个 Workspace 面板 + 五个视图 + 两个入口（better-sidebar 标签页 / 原生右侧边栏）
 lib/client.js      构建产物（esbuild 打包，由宿主按 /plugins/... 提供）
 docs/design.md     架构取舍、平台发现、问题清单、里程碑
-ui/prototype.html  UI 原型（单文件，浏览器直接打开，7 个状态可切换）
+ui/prototype.html  UI 原型（单文件，浏览器直接打开，可切深色）——界面以它为准
 test/              六组测试（见下）
 scripts/           对着真实服务器跑的验收脚本
 ```
 
 ## 先看原型
 
-双击 `ui/prototype.html`。顶栏可切换 7 个界面状态：连接页 / 连接中 / 文件 / 终端 / 同步 / 设置 / 错误。  
+双击 `ui/prototype.html`。顶栏可切换界面状态：连接页 / 连接中 / 文件 / 终端 / 同步 / 转发 / 设置 / 错误。
 也支持 `?view=terminal`、`?view=sync` 等直达链接。
+
+面板按原型的 424px 设计，宽度跟着右侧栏走；原型里的深色版本通过 `light-dark()` 复用同一套 token，自动跟随 DSH 的主题。
 
 ## 核心判断（详见 docs/design.md）
 
@@ -42,7 +46,7 @@ scripts/           对着真实服务器跑的验收脚本
 
 ```bash
 npm run pack:rel     # 生成 dist/dsh-remote-ssh-<版本>.tgz
-dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.2.1.tgz"
+dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.3.0.tgz"
 ```
 
 `-w` 不能省：profile 里有 `pnpm-workspace.yaml`，pnpm 认为根是 workspace root，不带 `-w` 会报 `ERR_PNPM_ADDING_TO_ROOT`。
@@ -51,7 +55,7 @@ dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.2.1.tgz"
 
 ```json
 "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-remote-ssh"] } },
-"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-0.2.1.tgz" }
+"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-0.3.0.tgz" }
 ```
 
 然后启动（app 参数直接跟在后面，不要写 `web`）：
@@ -105,6 +109,19 @@ ssh -L 6379:127.0.0.1:6379 me@server
 - **删除不传播**：本地删除只在队列里记一笔，绝不会在远端 `rm`。
 - 写入用临时文件 + rename 落地，避免 agent 读到半个文件；远端可执行位按本地 mode 推（Windows 上靠 `modeTemplate` 补回来）。
 
+## 连接、密码与主机切换
+
+未连上主机时，文件和终端两个视图会先显示一个连接门（`client/connect-view.jsx`），而不是一片空白。门上有：
+
+- **主机列表**：点一行即切主机；当前主机用强调色描边。
+- **密码框**：认证方式是密码的主机，密码直接在这里输 —— `type="password"`，回车即连。值只进内存里的 `secretStore`，**不写磁盘、不进日志、不随状态持久化**。
+- **「改用密码」**：密钥认证失败（`auth-failed` / `key-invalid`）时一键切换到密码，不用先去设置页改认证方式。
+- **明确的失败原因**：`auth-failed` / `bad-password` / `no-agent` / `timeout` / `refused` / `dns-failed` / `host-key-changed` 各有中文标题，原始 stderr 放在错误框里。
+
+主机切换的第二个入口是面板标题栏的主机名：点一下弹出主机菜单（在线状态徽标 + 新建 / 管理），不用切到别的视图。
+
+主题：面板不给自己的调色板之外的颜色 —— 亮/暗两套色值直接取自 `ui/prototype.html`，用 `light-dark()` 绑到宿主的 `color-scheme` 上。没有用 `--dsw-alias-*`：当前构建里品牌色是近黑（`#0f1115`）、边框是 4% 黑，套上去会把原型的蓝色强调和所有分隔线抹平。
+
 ## 验证
 
 ```bash
@@ -119,10 +136,10 @@ npm test             # 先自动 build，再跑六组 Node 测试
 | `test/ssh.mjs` | 握手、认证、exec、PTY、TOFU、错误分类、连接复用 |
 | `test/files.mjs` | 列表、文本守卫、原子写、陈旧检测、目录操作 |
 | `test/forward.mjs` | 真实 TCP 往返穿透 `direct-tcpip`、字节统计、端口占用、停止后拒绝、autoStart、落盘无密码 |
-| `test/render.mjs` | 用真实 React（`react-dom/server`）渲染四个面板 + 原生工作区，捕捉只在渲染时炸的错 |
-| `test/native.mjs` | 两个入口的取舍：有 better-sidebar 时四个标签页、没有时原生类型/面板/头部按钮、后激活时的交接、卸载后无残留 |
+| `test/render.mjs` | 用真实 React（`react-dom/server`）渲染五个视图 + 连接门四态 + 原生工作区，并断言密码框存在（issue #2），捕捉只在渲染时炸的错 |
+| `test/native.mjs` | 两个入口的取舍：有 better-sidebar 时**一个**标签页、没有时原生类型/面板/头部按钮、后激活时的交接、卸载后无残留 |
 
-浏览器产物检查（在真实 Chrome 里加载 bundle，验证四个标签页注册、顺序、重复挂载幂等、卸载后清空）：
+浏览器产物检查（在真实 Chrome 里加载 bundle，验证标签页注册、order 46、重复挂载幂等、卸载后清空）：
 
 ```bash
 chrome --headless=new --dump-dom test/bundle-check.html

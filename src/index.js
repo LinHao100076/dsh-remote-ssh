@@ -31,7 +31,7 @@ export const name = 'dsh-remote-ssh'
 /** Routes, sessions and remote terminals need these services before mounting. */
 export const inject = ['webServer', 'sessions']
 
-const VERSION = '0.2.1'
+const VERSION = '0.3.0'
 
 /**
  * Mount the plugin.
