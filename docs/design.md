@@ -383,3 +383,26 @@ v0.2.1 能跑通全部功能，但界面和 `ui/prototype.html` 是两套东西�
 - **没有切换主机的入口**。连接门里列出全部主机（当前主机用强调色描边），面板标题栏的主机名点开是主机菜单（在线徽标 + 新建 / 管理）。两处都能切，不用绕去设置页。
 
 验证方式：`ui/preview.html`（不进包）用真实 React UMD 加载真实 `lib/client.js`，配假 API 与假 WebSocket，逐屏截图和原型比对；再用 CDP 驱动真实 DSH profile 截图复核 —— 亮色、暗色、连接门四态、五个视图都过了一遍。
+
+### 8.9 宿主端也打包：让安装方式不再决定成败（v0.3.1）
+
+0.3.0 发出去之后，用户在桌面应用里装出来的结果是「启用失败：1 entry did not activate — Cannot find package 'ssh2'」。原因不在代码：
+
+- 他是把 tgz 解压到 `D:/temp/新建文件夹/package`，再从那个目录装的；
+- pnpm 把本地目录写成 `link:`，而**链接进来的目录不会安装它自己的依赖**；
+- 于是 `src/ssh/pool.js` 的 `import ssh2 from 'ssh2'` 在宿主端解析失败，整个插件被判定未激活；
+- 同一条命令、同一个包，换成 `add -w <tgz>` 就是好的 —— pnpm 会把 tarball 的 `dependencies` 正常装进 `.pnpm`。
+
+这属于「插件把自身结构暴露给了安装方式」。修法不是写文档提醒，是把宿主端也打成一个自包含的 bundle：
+
+1. `build.mjs` 多产一个 `lib/server.mjs`（esbuild，`platform: node`，`format: esm`），入口仍是 `src/index.js`；`package.json` 的 `main` 与 `exports['.']` 指向它。
+2. `ssh2`、`ws`、`chokidar` 移进 `devDependencies`，发布包 `dependencies` 为空 —— 装到哪都不再需要联网解析，也不再在安装期尝试编译 `ssh2` 的原生加速模块。
+3. ESM 输出有两个坑，都得在 banner 里补：
+   - `ws` / `ssh2` 是 CommonJS，会延迟 `require('events')` 这类内置模块，esbuild 无法静态改写，只能在 ESM 里造一个 `createRequire(import.meta.url)`；esbuild 的 `__require` 助手检测到作用域里有真 `require` 就会用它。
+   - `ssh2`（及它内联的 emscripten 块）引用 `__dirname` / `__filename`，ESM 里不存在，banner 从 `import.meta.url` 还原。
+4. 可选原生模块（`cpu-features`、`bufferutil`、`utf-8-validate`、`*.node`）用 esbuild 插件替换成空对象 —— 它们本来都包在 `try {} catch {}` 里，等价于「这台机器没装可选依赖」。
+
+代价与验证：`lib/server.mjs` 约 980 KiB，包体从 148 KiB 涨到 333 KiB。验证方式是把 `test/ssh.mjs` 跑两遍，第二遍 `--bundle` 直接从 `lib/server.mjs` 拿 `SshPool`（因此 `src/index.js` 多导出了 `SshPool`），对着进程内的 ssh2 服务器完成握手、exec、PTY、TOFU 与错误分类 —— 只有真握手才能证明内联进来的 `ssh2` 没被打坏。实测：
+
+- 解压后的目录**周围没有任何 node_modules**，`import('./package/lib/server.mjs')` 正常导出 `apply/name/inject/SshPool`；
+- 用 `link:` 把这个解压目录装进一个带 web-app 的 profile，`dsh` 启动无未激活警告，`hosts.list` 返回真实数据，`hosts.info` 对着真实主机返回 `auth-failed`（说明 bundled ssh2 真的把加密握手走到认证阶段了）。
