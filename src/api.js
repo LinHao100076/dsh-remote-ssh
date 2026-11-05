@@ -26,6 +26,23 @@ export function sessionCwd(ctx, sessionId, fallback) {
 }
 
 /**
+ * Stable id for an unsaved draft connection.
+ *
+ * The settings pane tests a connection before it has a real id. A random id per
+ * request leaves one live ssh2 client (and one status entry) behind per click;
+ * borrowing the *selected* host's id is worse — a brand-new host then writes
+ * into the connection slot of the host you are already using. A key derived from
+ * the target gives retries a single connection and cannot collide with a stored
+ * `host-…` id.
+ */
+function draftKey(draft) {
+  const user = typeof draft.user === 'string' ? draft.user : ''
+  const host = typeof draft.host === 'string' ? draft.host : ''
+  const port = Number(draft.port ?? 22)
+  return `draft:${user}@${host}:${Number.isFinite(port) ? port : 22}`
+}
+
+/**
  * Build the dispatch table.
  *
  * `version` is passed in rather than read off `ctx`: a real cordis context is a
@@ -37,15 +54,19 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, v
   function hostOf(payload, { allowDraft = false } = {}) {
     if (allowDraft && payload.draft !== undefined && payload.draft !== null) {
       const draft = payload.draft
+      // A draft that carries a real id is an edit of that host: it must keep the
+      // host key pinned on first contact, otherwise "测试连接" on an edited host
+      // would silently re-pin a *changed* key and the protection would be gone.
+      const edited = typeof draft.id === 'string' && draft.id !== '' ? store.host(draft.id) : undefined
       const row = {
-        id: typeof draft.id === 'string' && draft.id !== '' ? draft.id : nextId('draft'),
+        id: typeof draft.id === 'string' && draft.id !== '' ? draft.id : draftKey(draft),
         name: draft.name ?? draft.host ?? 'draft',
         host: draft.host,
         port: Number(draft.port ?? 22),
         user: draft.user,
         alias: draft.alias,
         proxyJump: draft.proxyJump,
-        fingerprint: draft.fingerprint,
+        fingerprint: draft.fingerprint ?? edited?.fingerprint,
         auth: { ...(draft.auth ?? { type: 'agent' }), ...(payload.auth ?? {}) },
       }
       return row
@@ -117,6 +138,9 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, v
         await forward.stopHost(row.id)
         pool.close(existing.id)
       }
+      // A "测试连接" made before saving holds a connection under the draft key;
+      // the saved row gets its own, so drop the probe instead of leaving both up.
+      pool.close(draftKey(row))
       return { host: store.host(row.id), hosts: store.hosts() }
     },
 

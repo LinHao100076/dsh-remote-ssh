@@ -469,3 +469,55 @@ ws 判断的是「require 成不成功」，不是「对象长什么样」。空
 为什么测试没抓到：整套测试里**没有一个真 WebSocket**。`test/smoke.mjs` 只校验帧编解码，`test/ssh.mjs` 只走 SSH 通道，`test/e2e-profile.mjs` 需要真 profile。于是补了 `test/ws.mjs`：用**构建产物里的** `WebSocketServer` 加一个真客户端对打，把 ws 分支的每个阈值两侧都压一遍（48 字节服务端 mask、32 字节 unmask、24 字节 UTF-8 校验，再加一条 200 KB 会被拆帧的）。为此 `src/index.js` 多导出 `WebSocketServer`，和 `SshPool` 同一个理由：只有真跑一遍才证明内联进来的副本没坏。用 0.3.1 的打桩构建跑这条测试，报的正是 `bufferUtil.unmask is not a function`。
 
 issue #4 还有后半段：「崩溃后终端只显示 bash 光标，但是无法输入」。那是宿主被拉起后旧 socket 已死、面板仍留着上一个 xterm 屏幕，`onData` 把每个按键都丢进一个已关闭的 socket。现在 `onclose` 会区分「自己关的」（`disposed`）与「被断开的」，后者往屏幕写一行 `[连接已断开]` 并把状态条切成错误态 + 「重连」按钮；`exit` 帧已经解释过原因的（`ended`）不重复报错。
+
+### 8.12 配置错误不能占用连接槽位（v0.3.4，issue #5）
+
+用户新建主机时填了密码，点「测试连接」，回复是「请输入密码」。截图里密码框有三个圆点、认证选的是「密码」、底部状态栏停在「连接中」。
+
+抓包先排掉一半嫌疑：**密码真的发出去了**。
+
+```
+POST /remote/app/remote/api/hosts.connect
+{"draft":{"id":"host-mw23oqxi-2","host":"10.86.55.110","user":"root","auth":{"type":"password"}},
+ "auth":{"password":"Probe#1234"}}
+→ {"ok":false,"error":{"code":"bad-password","message":"请输入密码"}}
+```
+
+密码在 payload 里，服务端却当它不存在。把范围收窄到池子，一行就能复现：
+
+```js
+pool.ensure({ id:'h1', ... auth:{type:'password'} })                      // bad-password
+pool.status('h1')                                                          // 'connecting' ← 钉子
+pool.ensure({ id:'h1', ... auth:{type:'password', password:'pw'} })       // bad-password（重放）
+```
+
+根因在 `ensure()` 与 `#connect()` 的先后顺序：
+
+```js
+async ensure(host) {
+  ...
+  const pending = this.#connect(host)                    // ← 这里可能已经同步拒绝
+  this.#records.set(host.id, { status: 'connecting', pending })   // ← 却无条件写成「连接中」
+  ...
+}
+
+async #connect(host) {
+  const options = this.#options(host)   // ← 缺密码在这里抛，在 try/catch 之外
+  try { ... } catch (error) { /* 标记 error 的分支永远走不到 */ }
+}
+```
+
+`#options` 抛的是**配置错误**（缺密码、私钥读不了、没有 ssh-agent），它在 `#connect` 的 try/catch **之前**，所以那条分支里「把记录标成 error」的代码永远不执行；而 `ensure` 已经把记录写成了 `connecting` 并挂上那个**已拒绝的 promise**。此后任何一次 `ensure(host.id)` 都会命中 `existing.status === 'connecting'` 直接返回死 promise —— 于是一个「当时手上没有密码」的后台尝试，把这个主机的所有后续连接都钉死了：密码带上来也没用，回的还是那句话。
+
+谁能触发那次后台尝试：面板一打开就要列文件，主机的 `auth.type` 是 `password`，而密码从不落盘 —— 必然缺密码。这不是异常路径，是**正常路径**。
+
+两处修：
+
+1. **先建 options，再占槽位。** `ensure()` 里 `const options = this.#options(this.#withSecret(host))` 放在写记录之前，配置错误直接抛给调用方、记录一动不动；`#connect(host, options)` 不再自己算 options，也就不会在 try 之外抛。
+2. **草稿的 id 按目标派生**（`draft:user@host:port`），且**新建表单不再借用当前主机的 id**。原来 `SettingsPane` 无条件收 `host`，`toRow(form, host?.id)` 把已连接主机的 id 塞进草稿 —— 测试一个全新主机会写进在用主机的连接槽位；而每次随机 id 又会给每次点击留一条不断开的 ssh2 连接。现在按目标派生：重试复用一条，且不可能撞上 `host-…`。
+
+顺势补一个同路径上的安全洞：草稿不带 `fingerprint`，而 `#verifyHost` 对空指纹是「首次接触即钉住」。于是「编辑已有主机 → 测试连接」会把**变过的**主机密钥重新钉上，TOFU 保护静默失效。现在草稿若带真实 id，就从存量行继承指纹（草稿显式给出的仍然优先 —— 那是用户主动重钉）。
+
+回归钉在三处：`test/ssh.mjs` 用进程内 ssh2 服务器证明「缺密码不动槽位、密码一到就连上」，并且失败（`auth-failed`）不是终点、换对密码能重连；`test/api.mjs` 证明草稿 id 稳定、编辑保留指纹。用 v0.3.3 的 `pool.js` 跑 `test/ssh.mjs`，报的正是 `actual: 'connecting', expected: 'disconnected'`。
+
+验证：真机（桌面应用、用户 desktop profile、`link:` 安装）打开面板头部是 `· 未连接`（不再是「正在建立连接…」），填入密码点「测试连接」返回「认证失败：密码被拒绝」—— 密码确实走到了认证阶段。

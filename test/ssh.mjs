@@ -123,10 +123,34 @@ const clientA = await pool.ensure(base)
 const clientB = await pool.ensure(base)
 assert.equal(clientA, clientB)
 
+/* A failed attempt is retried, not replayed: the record is `error`, so the next
+   ensure() starts a fresh one. */
+await bad.ensure({ ...base, id: 'bad', auth: { type: 'password', password: 'p' } })
+assert.equal(bad.status('bad'), 'connected')
+
+/* Issue #5: a *configuration* error must not claim the connection slot.
+   Opening the panel against a password host with no secret on hand made a
+   background attempt that threw inside `#options`; the record stayed on
+   `connecting` with an already-rejected promise, so the later attempt that did
+   carry the password was answered by replaying `请输入密码` — the password was on
+   the wire and the user was told to type one. */
+const retry = new SshPool({})
+await assert.rejects(
+  () => retry.ensure({ ...base, id: 'retry', auth: { type: 'password' } }),
+  (error) => {
+    assert.equal(error.code, 'bad-password')
+    return true
+  },
+)
+assert.equal(retry.status('retry'), 'disconnected', 'a missing password must leave the slot free')
+await retry.ensure({ ...base, id: 'retry', auth: { type: 'password', password: 'p' } })
+assert.equal(retry.status('retry'), 'connected', 'the same host must connect once the password arrives')
+
 pool.dispose()
 bad.dispose()
 pinned.dispose()
+retry.dispose()
 server.close()
 
-console.log(`ssh[${label}]: ok (handshake, exec, pty channel, TOFU pin, auth + host-key errors)`)
+console.log(`ssh[${label}]: ok (handshake, exec, pty channel, TOFU pin, auth + host-key errors, issue #5 retry)`)
 process.exit(0)

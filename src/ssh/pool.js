@@ -210,21 +210,35 @@ export class SshPool {
    */
   async ensure(host) {
     const existing = this.#records.get(host.id)
-    if (existing?.status === 'connected') return existing.client
-    if (existing?.status === 'connecting') return existing.pending
-    const pending = this.#connect(host)
+    if (existing?.status === 'connected' && existing.client !== undefined) return existing.client
+    if (existing?.status === 'connecting' && existing.pending !== undefined) return existing.pending
+    // Build the options *before* the record is claimed. A missing password, an
+    // unreadable key or an absent ssh-agent is a configuration error, not a
+    // failed attempt, and issue #5 was exactly this class of error getting
+    // cached: `#options` used to throw inside `#connect` but *before* its
+    // try/catch, so the rejection never marked the record while `ensure` had
+    // already written `connecting` + that dead promise. Every later attempt —
+    // password on the wire and all — was answered by replaying the rejection
+    // ("请输入密码"), and the status bar sat on 连接中 forever.
+    const options = this.#options(this.#withSecret(host))
+    const pending = this.#connect(host, options)
     this.#records.set(host.id, { hostId: host.id, status: 'connecting', client: undefined, pending })
     this.#setStatus(host.id, 'connecting')
     return pending
   }
 
-  async #connect(host) {
-    // A re-connect after a network drop arrives without the password (the row
-    // never stores one), so the remembered secret fills the gap.
+  /**
+   * Host row with the in-memory secret merged in: a re-connect after a network
+   * drop arrives without the password (the row never stores one), so the
+   * remembered credential fills the gap. Nothing here touches the state file.
+   */
+  #withSecret(host) {
     const remembered = this.#secrets.get(host.id)
-    const options = this.#options(remembered === undefined
-      ? host
-      : { ...host, auth: { ...(host.auth ?? { type: 'agent' }), ...remembered } })
+    if (remembered === undefined) return host
+    return { ...host, auth: { ...(host.auth ?? { type: 'agent' }), ...remembered } }
+  }
+
+  async #connect(host, options) {
     const client = new Client()
     const record = () => this.#records.get(host.id)
     try {

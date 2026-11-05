@@ -24,7 +24,7 @@ lib/client.js      构建产物：客户端 bundle（esbuild 打包，由宿主�
 lib/server.mjs     构建产物：宿主端 bundle（ssh2 / ws / chokidar 全打进来，包里零运行期依赖）
 docs/design.md     架构取舍、平台发现、问题清单、里程碑
 ui/prototype.html  UI 原型（单文件，浏览器直接打开，可切深色）——界面以它为准
-test/              九组测试（见下）
+test/              十组测试（见下）
 scripts/           对着真实服务器跑的验收脚本
 ```
 
@@ -47,7 +47,7 @@ scripts/           对着真实服务器跑的验收脚本
 
 ```bash
 npm run pack:rel     # 生成 dist/dsh-remote-ssh-<版本>.tgz
-dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.3.1.tgz"
+dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.3.4.tgz"
 ```
 
 `-w` 不能省：profile 里有 `pnpm-workspace.yaml`，pnpm 认为根是 workspace root，不带 `-w` 会报 `ERR_PNPM_ADDING_TO_ROOT`。
@@ -56,7 +56,7 @@ dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-0.3.1.tgz"
 
 ```json
 "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "dsh-remote-ssh"] } },
-"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-0.3.1.tgz" }
+"dependencies": { "dsh-remote-ssh": "file:C:/.../dsh-remote-ssh-0.3.4.tgz" }
 ```
 
 **不要解压 tgz 后指向解压出来的目录。** pnpm 会把本地目录写成 `link:`，而链接进来的目录不会安装它自己的依赖 —— 一旦插件还有 `dependencies`，宿主端第一次 `import` 就会 `ERR_MODULE_NOT_FOUND`，整个插件停用，界面上只留一句「启用失败」。
@@ -130,7 +130,7 @@ ssh -L 6379:127.0.0.1:6379 me@server
 ## 验证
 
 ```bash
-npm test             # 先自动 build（两个 bundle），再跑九轮 Node 测试
+npm test             # 先自动 build（两个 bundle），再跑十轮 Node 测试
 ```
 
 `npm test` 有 `pretest` 钩子，会先重建两个 bundle —— 否则渲染测试可能跑在旧产物上，改了代码却仍报绿。
@@ -143,6 +143,7 @@ npm test             # 先自动 build（两个 bundle），再跑九轮 Node �
 | `test/forward.mjs` | 真实 TCP 往返穿透 `direct-tcpip`、字节统计、端口占用、停止后拒绝、autoStart、落盘无密码 |
 | `test/render.mjs` | 用真实 React（`react-dom/server`）渲染五个视图 + 连接门四态 + 原生工作区，并断言密码框存在（issue #2），捕捉只在渲染时炸的错 |
 | `test/native.mjs` | 两个入口的取舍：有 better-sidebar 时**一个**标签页、没有时原生类型/面板/头部按钮、后激活时的交接、卸载后无残留 |
+| `test/api.mjs` | 草稿主机的 id 按目标稳定（重复点「测试连接」复用一条连接、不占用当前主机的槽位），编辑已有主机时沿用已钉的指纹（issue #5 回归） |
 | `test/styles.mjs` | 样式表注入：落到承载面板的那个 document、重复调用幂等、上一版残留的旧表就地刷新（issue #3 回归）、没有 head 不抛 |
 | `test/ws.mjs` | 用**构建产物里的** `WebSocketServer` 加真客户端对打，跨 ws 的 48/32/24 三个阈值与拆帧（issue #4 回归：空对象打桩曾让 `bufferUtil.unmask` 变成未捕获异常，一点终端就崩宿主） |
 

@@ -297,7 +297,10 @@ export function Workspace(props) {
     return (
       <SettingsPane
         ctx={ctx}
-        host={host}
+        // A new connection is not the selected one: handing it `host` made the
+        // form carry the current host's id, so testing a brand-new host wrote
+        // its connection into the slot of the host you were already using.
+        host={creating === true ? undefined : host}
         hosts={hosts}
         hostId={hostId}
         sessionId={sessionId}
