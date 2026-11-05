@@ -10,117 +10,13 @@
  */
 import assert from 'node:assert/strict'
 import { RemoteFiles } from '../src/remote/files.js'
-
-/** Minimal in-memory SFTP wrapper shaped like ssh2's. */
-class MemorySftp {
-  constructor() {
-    this.entries = new Map()
-    this.dirs = new Set(['/', '/srv', '/srv/app'])
-    this.put('/srv/app/main.ts', 'export const port = 8080\n')
-    this.put('/srv/app/README.md', '# app\n')
-    this.put('/srv/app/logo.bin', Buffer.from([0, 1, 2, 3]))
-  }
-
-  put(path, content) {
-    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8')
-    this.entries.set(path, { buffer, mtime: Math.floor(Date.now() / 1000), mode: 0o100644 })
-  }
-
-  #fail(cb, code = 2) {
-    const error = new Error(code === 2 ? 'No such file' : 'Failure')
-    error.code = code
-    cb(error)
-  }
-
-  readdir(path, cb) {
-    if (!this.dirs.has(path) && ![...this.entries.keys()].some((key) => key.startsWith(`${path}/`))) {
-      this.#fail(cb)
-      return
-    }
-    const seen = new Set()
-    const rows = []
-    for (const key of [...this.entries.keys(), ...this.dirs]) {
-      if (!key.startsWith(`${path}/`)) continue
-      const rest = key.slice(path.length + 1)
-      if (rest === '' || rest.includes('/')) continue
-      if (seen.has(rest)) continue
-      seen.add(rest)
-      const full = `${path}/${rest}`
-      const file = this.entries.get(full)
-      rows.push({
-        filename: rest,
-        attrs: file
-          ? { mode: file.mode, size: file.buffer.length, mtime: file.mtime }
-          : { mode: 0o040755, size: 0, mtime: 1700000000 },
-      })
-    }
-    cb(undefined, rows)
-  }
-
-  stat(path, cb) {
-    const file = this.entries.get(path)
-    if (file !== undefined) {
-      cb(undefined, { mode: file.mode, size: file.buffer.length, mtime: file.mtime })
-      return
-    }
-    if (this.dirs.has(path)) {
-      cb(undefined, { mode: 0o040755, size: 0, mtime: 1700000000 })
-      return
-    }
-    this.#fail(cb)
-  }
-
-  readFile(path, cb) {
-    const file = this.entries.get(path)
-    if (file === undefined) { this.#fail(cb); return }
-    cb(undefined, file.buffer)
-  }
-
-  writeFile(path, data, options, cb) {
-    if (typeof options === 'function') { cb = options; options = {} }
-    const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data)
-    this.entries.set(path, {
-      buffer,
-      mtime: Math.floor(Date.now() / 1000),
-      mode: (options?.mode ?? 0o644) | 0o100000,
-    })
-    cb(undefined)
-  }
-
-  rename(from, to, cb) {
-    const file = this.entries.get(from)
-    if (file === undefined) { this.#fail(cb); return }
-    this.entries.delete(from)
-    this.entries.set(to, file)
-    cb(undefined)
-  }
-
-  unlink(path, cb) {
-    if (!this.entries.has(path)) { this.#fail(cb); return }
-    this.entries.delete(path)
-    cb(undefined)
-  }
-
-  mkdir(path, options, cb) {
-    if (typeof options === 'function') { cb = options }
-    if (this.dirs.has(path)) {
-      const error = new Error('Failure'); error.code = 4
-      cb(error)
-      return
-    }
-    this.dirs.add(path)
-    cb(undefined)
-  }
-
-  rmdir(path, cb) {
-    this.dirs.delete(path)
-    cb(undefined)
-  }
-
-  chmod(path, mode, cb) { cb(undefined) }
-}
+import { MemorySftp } from './helpers/memory-sftp.mjs'
 
 const sftp = new MemorySftp()
+sftp.mkdirs('/srv', '/srv/app')
+sftp.put('/srv/app/main.ts', 'export const port = 8080\n')
+sftp.put('/srv/app/README.md', '# app\n')
+sftp.put('/srv/app/logo.bin', Buffer.from([0, 1, 2, 3]))
 const executed = []
 const pool = {
   sftp: async () => sftp,

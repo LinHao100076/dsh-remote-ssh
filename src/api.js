@@ -285,6 +285,13 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
       return transfer.downloadTree(host, remotePath, localPath)
     },
 
+    'transfer.cleanParts': async (payload) => {
+      const host = hostForSession(payload)
+      const root = requireString(payload, 'remoteRoot')
+      if (!root.startsWith('/')) throw new ApiError('bad-path', '远端路径必须是绝对路径', 400)
+      return transfer.cleanParts(host, root)
+    },
+
     /* ── mapping + sync ────────────────────────────────────────────── */
 
     'sync.list': async (payload) => {

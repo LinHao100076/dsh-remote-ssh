@@ -24,7 +24,7 @@ lib/client.js      构建产物：客户端 bundle（esbuild 打包，由宿主�
 lib/server.mjs     构建产物：宿主端 bundle（ssh2 / ws / chokidar 全打进来，包里零运行期依赖）
 docs/design.md     架构取舍、平台发现、问题清单、里程碑
 ui/prototype.html  UI 原型（单文件，浏览器直接打开，可切深色）——界面以它为准
-test/              十一组测试（见下）
+test/              十二组测试（见下）
 scripts/           对着真实服务器跑的验收脚本；`dev-remote.mjs` 是本地假远端（exec 走真 shell，SFTP 只读）
 ```
 
@@ -131,6 +131,19 @@ ssh -L 6379:127.0.0.1:6379 me@server
 - **删除不传播**：本地删除只在队列里记一笔，绝不会在远端 `rm`。
 - 写入用临时文件 + rename 落地，避免 agent 读到半个文件；远端可执行位按本地 mode 推（Windows 上靠 `modeTemplate` 补回来）。
 
+### 断点续传
+
+传输是**分块**的（1 MiB 一块，顺序写），不是整包 `fastPut`/`fastGet`：
+
+- 两个方向都先写同目录的 part 文件（`<名字>.dsh-part-<大小>-<mtime>`），**结束后才 rename 成真名**。所以真实文件名下永远不会出现半个文件。
+- **part 文件的大小就是断点**。中断、断线、进程重启后重试同一个文件，会从 part 的末尾接着传，只补发剩下的部分。
+- part 名字里带源文件的大小和 mtime。源文件变了 → 指纹变了 → 旧的 part 不会被拿来拼接（宁可重传，也不生成一个「前半是旧版本、后半是新版本」的文件）。
+- 目录遍历会跳过 part 文件，它们不会被当成内容同步过去。
+
+残留的 part 只会在「中断」或「源文件改过」时出现。同步面板每个映射卡片上有「清理残留」，它只删 part 文件，并告诉你清掉了多少个、多少字节。
+
+> 顺序写而不是并发写：并发写不同偏移会在 part 里留下空洞，`size` 就不再等于「已写入的字节数」，断点也就不可信了。代价是吞吐受单通道往返限制（局域网实测约 45 MB/s），换来的是续传永远正确。
+
 ## 连接、密码与主机切换
 
 未连上主机时，文件和终端两个视图会先显示一个连接门（`client/connect-view.jsx`），而不是一片空白。门上有：
@@ -147,7 +160,7 @@ ssh -L 6379:127.0.0.1:6379 me@server
 ## 验证
 
 ```bash
-npm test             # 先自动 build（两个 bundle），再跑十一轮 Node 测试
+npm test             # 先自动 build（两个 bundle），再跑十二轮 Node 测试
 ```
 
 `npm test` 有 `pretest` 钩子，会先重建两个 bundle —— 否则渲染测试可能跑在旧产物上，改了代码却仍报绿。
@@ -157,6 +170,7 @@ npm test             # 先自动 build（两个 bundle），再跑十一轮 Node
 | `test/smoke.mjs` | 路由、主机、映射、转发规则的增删与校验、落盘、排除规则、终端帧 |
 | `test/ssh.mjs` | 握手、认证、exec、PTY、TOFU、错误分类、连接复用。跑两遍：一遍对 `src/`，一遍对 `lib/server.mjs`（`--bundle`），证明内联进来的 `ssh2` 还能握手 |
 | `test/files.mjs` | 列表、文本守卫、原子写、陈旧检测、目录操作 |
+| `test/transfer.mjs` | 分块传输与断点续传：中断后从 part 文件大小继续、只补发剩余、源文件变化时指纹不匹配不复用、过期 part 不被误用、清理只删 part、目录遍历跳过 part |
 | `test/forward.mjs` | 真实 TCP 往返穿透 `direct-tcpip`、字节统计、端口占用、停止后拒绝、autoStart、落盘无密码 |
 | `test/render.mjs` | 用真实 React（`react-dom/server`）渲染五个视图 + 连接门四态 + 原生工作区，并断言密码框存在（issue #2），捕捉只在渲染时炸的错 |
 | `test/native.mjs` | 两个入口的取舍：有 better-sidebar 时**一个**标签页、没有时原生类型/面板/头部按钮、后激活时的交接、卸载后无残留 |

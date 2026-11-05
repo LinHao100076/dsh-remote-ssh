@@ -28,7 +28,7 @@ const POLICY = [
 const directionLabel = (kind) => DIRECTION.find((item) => item.value === kind)?.label ?? kind
 
 /** One mapping card. */
-function MappingCard({ mapping, host, status, busy, onPatch, onPush, onPull, onRemove }) {
+function MappingCard({ mapping, host, status, busy, onPatch, onPush, onPull, onRemove, onClean }) {
   return (
     <div className="rs-card">
       <div className="rs-card-h">
@@ -69,6 +69,7 @@ function MappingCard({ mapping, host, status, busy, onPatch, onPush, onPull, onR
         <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
           <Button size="sm" onClick={onPush} disabled={busy}>{busy ? '推送中…' : '全量推送'}</Button>
           <Button size="sm" onClick={onPull}>下载单个</Button>
+          <Button size="sm" onClick={onClean} disabled={busy} title="删除中断的传输留下的片段文件">清理残留</Button>
           <span style={{ flex: 1 }} />
           {mapping.pending > 0 ? <span className="rs-badge warn">{mapping.pending} 待上传</span> : null}
         </div>
@@ -218,7 +219,7 @@ export function SyncPane({ ctx, sessionId, hostId, hosts, statuses, active, snap
               mapping={mapping}
               host={host}
               status={statuses?.[mapping.hostId]?.status ?? 'disconnected'}
-              busy={busy === `push-${mapping.id}`}
+              busy={busy === `push-${mapping.id}` || busy === `clean-${mapping.id}`}
               onPatch={(patch) => void run(`map-${mapping.id}`, () => api(ctx, 'sync.save', {
                 sessionId, mapping: { ...mapping, ...patch },
               }))}
@@ -240,6 +241,16 @@ export function SyncPane({ ctx, sessionId, hostId, hosts, statuses, active, snap
               onRemove={() => {
                 if (!window.confirm('删除该映射？未上传的改动不会回滚。')) return
                 void run(`del-${mapping.id}`, () => api(ctx, 'sync.remove', { sessionId, mappingId: mapping.id }))
+              }}
+              onClean={() => {
+                void run(`clean-${mapping.id}`, async () => {
+                  const value = await api(ctx, 'transfer.cleanParts', {
+                    sessionId, hostId: mapping.hostId, remoteRoot: mapping.remoteRoot,
+                  })
+                  flash(value.removed === 0
+                    ? '没有残留的传输片段'
+                    : `已清理 ${value.removed} 个片段 · ${formatBytes(value.bytes)}`)
+                })
               }}
             />
           )

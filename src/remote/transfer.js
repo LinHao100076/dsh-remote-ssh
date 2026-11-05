@@ -1,18 +1,64 @@
 /**
  * File transfer between the local workspace and a remote host.
  *
- * `fastPut`/`fastGet` stream in chunks with a small concurrency window, so a
- * 200 MB artifact never lands in this process's heap. Tree transfers walk with
- * a shared include/exclude predicate (`sync/mapping.js`) and create remote
- * directories on demand, so an upload after a local `mkdir` needs no manual
- * step. Progress is reported per file and in aggregate for the queue UI.
+ * Transfers are chunked by hand rather than handed to `fastPut`/`fastGet`, for
+ * one reason: **an interrupted transfer has to be resumable**. Both directions
+ * write into a sibling part file and only rename it into place at the end, so
+ * the part file's size *is* the resume point — no journal, no metadata that can
+ * disagree with reality, and a half-written file never appears under the real
+ * name. Chunks are written in order for the same reason: a concurrent writer
+ * would leave holes, and `size` would then overstate what is actually on disk.
+ *
+ * Tree transfers walk with a shared include/exclude predicate
+ * (`sync/mapping.js`) and create remote directories on demand. Progress is
+ * reported per chunk so a 200 MB artifact shows a moving bar instead of a
+ * frozen one.
  * @module dsh-remote-ssh/remote/transfer
  */
 import { createReadStream } from 'node:fs'
-import { mkdir, opendir, stat } from 'node:fs/promises'
+import { mkdir, open as openLocal, opendir, rename, stat, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { RemoteError } from '../ssh/pool.js'
 import { call, dirnameRemote, formatBytes, joinRemote } from '../util.js'
+
+/** Chunk size for chunked transfers; large enough to keep round trips rare. */
+const CHUNK = 1024 * 1024
+/** Suffix shared by every part file, so a tree walk can recognise its own litter. */
+const PART_MARK = '.dsh-part-'
+
+/** Whether a path is a leftover part file from a transfer. */
+export function isPartPath(path) {
+  return String(path).includes(PART_MARK)
+}
+
+/** Promise wrapper for `sftp.open`. */
+function openHandle(sftp, path, flags) {
+  return new Promise((resolve, reject) => {
+    sftp.open(path, flags, (error, handle) => (error ? reject(error) : resolve(handle)))
+  })
+}
+
+/** Promise wrapper for `sftp.close` (never rejects: it runs in `finally`). */
+function closeHandle(sftp, handle) {
+  return new Promise((resolve) => { sftp.close(handle, () => resolve()) })
+}
+
+/** Promise wrapper for `sftp.read`. */
+function readHandle(sftp, handle, buffer, length, position) {
+  return new Promise((resolve, reject) => {
+    sftp.read(handle, buffer, 0, length, position, (error, bytesRead) => {
+      if (error) reject(error)
+      else resolve(bytesRead)
+    })
+  })
+}
+
+/** Promise wrapper for `sftp.write`. */
+function writeHandle(sftp, handle, buffer, length, position) {
+  return new Promise((resolve, reject) => {
+    sftp.write(handle, buffer, 0, length, position, (error) => (error ? reject(error) : resolve()))
+  })
+}
 
 /** Directory/file walk over the local root, filtered by the mapping matcher. */
 async function* walkLocal(root, matcher, rel = '') {
@@ -52,51 +98,138 @@ export class Transfer {
     this.files = files
   }
 
-  /** Stream one local file to a remote path, creating its directory first. */
-  async uploadFile(host, localPath, remotePath, { mode, concurrency = 4 } = {}) {
+  /**
+   * Stream one local file to a remote path, resuming an interrupted attempt.
+   *
+   * The part file carries the source's size and mtime in its name, so a resumed
+   * attempt only ever continues bytes that came from *this* version: if the
+   * local file changed, the fingerprint changes and the stale part is ignored
+   * instead of being spliced with new bytes. The rename at the end makes the
+   * file appear atomically under its real name.
+   * @param {object} host - stored host row.
+   * @param {string} localPath - absolute local file.
+   * @param {string} remotePath - absolute remote target.
+   * @param {{mode?: number, chunkSize?: number, onProgress?: Function, signal?: AbortSignal}} [options] - bounds.
+   * @returns {Promise<object>} remote state plus how many bytes were resumed.
+   */
+  async uploadFile(host, localPath, remotePath, { mode, chunkSize = CHUNK, onProgress, signal } = {}) {
     const sftp = await this.pool.sftp(host)
     const local = await stat(localPath)
     if (!local.isFile()) throw new RemoteError('not-a-file', `${localPath} 不是文件`, 400)
     await this.files.mkdir(host, dirnameRemote(remotePath)).catch(() => {})
-    const tmp = `${remotePath}.dsh-tmp-${Date.now().toString(36)}`
-    try {
-      await new Promise((resolve, reject) => {
-        sftp.fastPut(localPath, tmp, { concurrency, chunkSize: 32768 }, (error) => {
-          if (error) reject(new RemoteError('upload-failed', `上传失败 ${remotePath}：${error.message}`, 502))
-          else resolve()
-        })
-      })
-      try {
-        await call(sftp, 'rename', tmp, remotePath)
-      } catch {
-        await call(sftp, 'unlink', remotePath).catch(() => {})
-        await call(sftp, 'rename', tmp, remotePath)
-      }
-      const bits = mode ?? ((local.mode & 0o111) !== 0 ? 0o755 : 0o644)
-      await call(sftp, 'chmod', remotePath, bits).catch(() => {})
-    } catch (error) {
-      await call(sftp, 'unlink', tmp).catch(() => {})
-      throw error
+
+    const part = `${remotePath}${PART_MARK}${local.size}-${Math.floor(local.mtimeMs)}`
+    const existing = await this.files.stat(host, part).catch(() => undefined)
+    let offset = 0
+    if (existing !== undefined) {
+      if (existing.size <= local.size) offset = existing.size
+      // A part that is larger than the source can only be a leftover from a
+      // different file content; keeping it would truncate the upload.
+      else await call(sftp, 'unlink', part).catch(() => {})
     }
+    const resumedFrom = offset
+
+    const handle = await openLocal(localPath, 'r')
+    let remoteHandle
+    try {
+      remoteHandle = await openHandle(sftp, part, offset > 0 ? 'r+' : 'w')
+      const buffer = Buffer.allocUnsafe(chunkSize)
+      while (offset < local.size) {
+        if (signal?.aborted === true) throw new RemoteError('aborted', '传输已取消', 499)
+        const length = Math.min(chunkSize, local.size - offset)
+        const { bytesRead } = await handle.read(buffer, 0, length, offset)
+        if (bytesRead === 0) break
+        await writeHandle(sftp, remoteHandle, buffer, bytesRead, offset)
+        offset += bytesRead
+        onProgress?.({ transferred: offset, total: local.size, path: remotePath })
+      }
+    } catch (error) {
+      throw error instanceof RemoteError
+        ? error
+        : new RemoteError('upload-failed', `上传失败 ${remotePath}：${error.message}`, 502)
+    } finally {
+      if (remoteHandle !== undefined) await closeHandle(sftp, remoteHandle)
+      await handle.close()
+    }
+
+    try {
+      try {
+        await call(sftp, 'rename', part, remotePath)
+      } catch {
+        // Protocol v3 servers refuse to rename onto an existing file.
+        await call(sftp, 'unlink', remotePath).catch(() => {})
+        await call(sftp, 'rename', part, remotePath)
+      }
+    } catch (error) {
+      // The part stays: the next attempt resumes from it instead of starting over.
+      throw new RemoteError('upload-failed', `上传失败 ${remotePath}：${error.message}`, 502)
+    }
+    const bits = mode ?? ((local.mode & 0o111) !== 0 ? 0o755 : 0o644)
+    await call(sftp, 'chmod', remotePath, bits).catch(() => {})
     const remote = await this.files.stat(host, remotePath)
-    return { path: remotePath, size: local.size, mtimeMs: remote?.mtimeMs ?? Date.now(), mode: remote?.mode }
+    return { path: remotePath, size: local.size, mtimeMs: remote?.mtimeMs ?? Date.now(), mode: remote?.mode, resumedFrom }
   }
 
-  /** Stream one remote file into a local path. */
-  async downloadFile(host, remotePath, localPath) {
+  /**
+   * Stream one remote file into a local path, resuming an interrupted attempt.
+   * @param {object} host - stored host row.
+   * @param {string} remotePath - absolute remote source.
+   * @param {string} localPath - absolute local target.
+   * @param {{chunkSize?: number, onProgress?: Function, signal?: AbortSignal}} [options] - bounds.
+   * @returns {Promise<object>} local state plus how many bytes were resumed.
+   */
+  async downloadFile(host, remotePath, localPath, { chunkSize = CHUNK, onProgress, signal } = {}) {
     const sftp = await this.pool.sftp(host)
     const remote = await this.files.stat(host, remotePath)
     if (remote === undefined) throw new RemoteError('not-found', `远端不存在：${remotePath}`, 404)
     if (remote.type === 'dir') throw new RemoteError('is-dir', `${remotePath} 是目录，请用 downloadTree`, 400)
     await mkdir(dirname(localPath), { recursive: true })
-    await new Promise((resolve, reject) => {
-      sftp.fastGet(remotePath, localPath, { concurrency: 4, chunkSize: 32768 }, (error) => {
-        if (error) reject(new RemoteError('download-failed', `下载失败 ${remotePath}：${error.message}`, 502))
-        else resolve()
-      })
-    })
+
+    const part = `${localPath}${PART_MARK}${remote.size}-${Math.floor(remote.mtimeMs)}`
+    let offset = 0
+    const existing = await stat(part).catch(() => undefined)
+    if (existing !== undefined) {
+      if (existing.isFile() && existing.size <= remote.size) offset = existing.size
+      else await unlink(part).catch(() => {})
+    }
+    const resumedFrom = offset
+
+    const remoteHandle = await openHandle(sftp, remotePath, 'r')
+    const handle = await openLocal(part, offset > 0 ? 'r+' : 'w')
+    try {
+      const buffer = Buffer.allocUnsafe(Math.min(chunkSize, Math.max(remote.size, 1)))
+      let empty = 0
+      while (offset < remote.size) {
+        if (signal?.aborted === true) throw new RemoteError('aborted', '传输已取消', 499)
+        const length = Math.min(chunkSize, remote.size - offset)
+        const bytesRead = await readHandle(sftp, remoteHandle, buffer, length, offset)
+        if (bytesRead === 0) {
+          // The file shrank while we were reading it; stop rather than spinning.
+          empty += 1
+          if (empty > 2) break
+          continue
+        }
+        await handle.write(buffer, 0, bytesRead, offset)
+        offset += bytesRead
+        onProgress?.({ transferred: offset, total: remote.size, path: remotePath })
+      }
+    } catch (error) {
+      throw error instanceof RemoteError
+        ? error
+        : new RemoteError('download-failed', `下载失败 ${remotePath}：${error.message}`, 502)
+    } finally {
+      await closeHandle(sftp, remoteHandle)
+      await handle.close()
+    }
+
+    try {
+      await rename(part, localPath)
+    } catch {
+      await unlink(localPath).catch(() => {})
+      await rename(part, localPath)
+    }
     const local = await stat(localPath).catch(() => undefined)
-    return { path: localPath, size: local?.size ?? remote.size, mtimeMs: local?.mtimeMs ?? Date.now() }
+    return { path: localPath, size: local?.size ?? remote.size, mtimeMs: local?.mtimeMs ?? Date.now(), resumedFrom }
   }
 
   /**
@@ -148,6 +281,8 @@ export class Transfer {
     for (const entry of entries) {
       const rel = entry.name
       if (skip?.(rel)) continue
+      // A part file is somebody's unfinished transfer, not content.
+      if (isPartPath(rel)) continue
       if (entry.type === 'dir') {
         const nested = await this.downloadTree(host, entry.path, join(localRoot, entry.name), {
           depth: depth + 1,
@@ -170,6 +305,45 @@ export class Transfer {
       }
     }
     return { files: done, bytes, failed }
+  }
+
+  /**
+   * Delete leftover part files under a remote directory.
+   *
+   * Sweeping happens here rather than on every upload on purpose: an upload
+   * would have to `readdir` its target directory to find strangers, and one
+   * listing per file turns a 1000-file push into a thousand directory reads. A
+   * part only survives an interruption or a source change, so the mess is small
+   * and rare — and the user can see the count before deciding.
+   * @param {object} host - stored host row.
+   * @param {string} remoteRoot - absolute remote directory.
+   * @param {{depth?: number}} [options] - recursion guard.
+   * @returns {Promise<{removed: number, bytes: number, failed: number}>} what was swept.
+   */
+  async cleanParts(host, remoteRoot, { depth = 0 } = {}) {
+    if (depth > 24) return { removed: 0, bytes: 0, failed: 0 }
+    const entries = await this.files.list(host, remoteRoot).catch(() => [])
+    let removed = 0
+    let bytes = 0
+    let failed = 0
+    for (const entry of entries) {
+      if (entry.type === 'dir') {
+        const nested = await this.cleanParts(host, entry.path, { depth: depth + 1 })
+        removed += nested.removed
+        bytes += nested.bytes
+        failed += nested.failed
+        continue
+      }
+      if (!isPartPath(entry.name)) continue
+      try {
+        await this.files.remove(host, entry.path)
+        removed += 1
+        bytes += entry.size
+      } catch {
+        failed += 1
+      }
+    }
+    return { removed, bytes, failed }
   }
 
   /** One-line transfer summary for tool output. */
