@@ -238,16 +238,30 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 
 ## 5. UI 原型说明
 
-`ui/prototype.html`（单文件，双击可开，可切深色）：
+`ui/prototype.html`（单文件，双击可开，可切深色）是**界面的唯一标准**：实现里所有面板都照着它做，配色、间距、信息密度都以它为准。
 
-- 顶部状态切换：连接页 / 连接中 / 文件 / 终端 / 同步 / 设置 / 错误 —— 七个状态都是真实会出现的界面，方便评审时逐条挑刺；
+- 顶部状态切换：连接页 / 连接中 / 文件 / 终端 / 同步 / 转发 / 设置 / 错误 —— 都是真实会出现的界面，方便评审时逐条挑刺；
 - 文件页：路径面包屑 + 懒加载树 + git 状态徽标 + "待上传"箭头 + 悬停操作（下载/上传）+ 底部文件预览条（含"在 better-sidebar 编辑器打开"这个联动入口）；
 - 终端页：多 tab + 会话信息条 + 真实可输入的提示符（回车有回显演示）+ 快捷键提示；
 - 同步页：映射卡片 / 策略分段控件 / 冲突卡片（三选一）/ 传输队列（带进度）/ 安全开关；
 - 设置页：连接表单 + 映射表 + 行为开关 + 保存/测试；
-- 底部状态栏固定显示：连接状态 · 映射数 · 队列数 · better-sidebar 版本（联动可见性）。
+- 底部状态栏固定显示：连接状态 · 映射数 · 队列数 · 传输协议。
 
-设计取舍：宽度按 424px 真实右侧栏做，不做"大屏才好看"的布局；所有信息密度按"开发者一天要看 200 次"来压，不放大卡片和留白。
+设计取舍：宽度按 424px 真实右侧栏做，不做"大屏才好看"的布局；所有信息密度按"开发者一天要看 200 次"来压，不放大卡片和留白。面板宽度实际跟着右侧栏走，被拖宽时居中的状态页（连接门、空态）用 `max-width: 360px` 收成一条可读的列，而不是把密码框拉成 600px 宽。
+
+### 5.1 配色只有一个来源
+
+亮/暗两套色值原样取自原型，写进 `.rs-root` 的 `--rs-*` 变量，再用 `light-dark()` 绑到宿主的 `color-scheme`：
+
+```css
+@supports (color: light-dark(#ffffff, #000000)) {
+  .rs-root { --rs-bg: light-dark(#ffffff, #15181e); --rs-accent: light-dark(#2f6feb, #6ba1ff); ... }
+}
+```
+
+**没有沿用 `--dsw-alias-*`**。一开始是沿用的，装进真实 profile 才发现这套别名对面板不成立：品牌色是近黑 `#0f1115`（原型的强调色是蓝）、`border-l1` 是 4% 黑（分隔线等于消失）、`bg-layer-1` 与 `bg-base` 都是纯白（`surface` 与 `panel` 塌成一层，主机图标块看起来像没渲染）。跟着宿主走等于把原型的视觉语言全丢掉，而用户要的恰恰是"和原型一样"。宿主的字体族仍然沿用（`--ds-font-family-code`），所以等宽字体和编辑器一致。
+
+xterm 的配色也改从这里取：`getPropertyValue` 拿到的是 `light-dark(...)` 文本，xterm 解析不了，所以 `client/terminal-view.jsx` 用一个隐藏探针元素把 token 换算成 `rgb()` 再交给它。
 
 ---
 
@@ -291,7 +305,12 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 | 端口转发（监听、direct-tcpip、生命周期） | `src/forward/manager.js` |
 | 终端桥（WS ⇄ SSH PTY + tmux 判定） | `src/ws/term.js` |
 | 状态持久化（密码不落盘） | `src/store.js` |
-| 客户端三个标签页 + 原生入口 | `client/index.js`、`client/native-view.js`、`client/*-view.js` |
+| 客户端装配：一个标签页 / 一个原生入口，两条路互斥 | `client/index.js` |
+| 面板骨架：主机头（主机菜单）、标签条、门控、状态栏 | `client/workspace.jsx` |
+| 连接门（无主机 / 连接中 / 失败 + 密码） | `client/connect-view.jsx` |
+| 五个视图 | `client/files-view.jsx`、`terminal-view.jsx`、`sync-view.jsx`、`forward-view.jsx`、`settings-view.jsx` |
+| 基础组件与图标集 | `client/ui.jsx` |
+| 全部样式（`rs-` 前缀，单文件注入） | `client/styles.js` |
 
 ### 8.2 四个踩过的坑
 
@@ -315,9 +334,9 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 | `test/ssh.mjs` | 握手、密码认证、exec、PTY、TOFU 记录、改指纹报 `host-key-changed`、错密码报 `auth-failed`、连接复用 | `node test/ssh.mjs` |
 | `test/files.mjs` | 列表排序、二进制/超大/陈旧守卫、原子写不留临时文件、mkdir 递归、rename、递归删除 | `node test/files.mjs` |
 | `test/forward.mjs` | 真实 TCP 往返穿过 `direct-tcpip`、字节统计、同端口判重、端口被占、停止后拒绝连接、autoStart 语义、规则持久化无密码 | `node test/forward.mjs` |
-| `test/render.mjs` | 用真实 React `renderToString` 渲染四个面板 + 原生工作区，捕捉只在渲染期暴露的错误 | `node test/render.mjs` |
-| `test/native.mjs` | 有 better-sidebar 时四个标签页、没有时原生类型/面板/头部按钮、后激活时交接、卸载无残留 | `node test/native.mjs` |
-| `test/bundle-check.html` | 真实浏览器加载 bundle：四个标签页、顺序 46–49、title/icon 函数解析、重复挂载幂等、卸载后清空 | `chrome --headless=new --dump-dom …` |
+| `test/render.mjs` | 用真实 React `renderToString` 渲染五个视图、连接门四态与原生工作区，断言密码输入与失败原因（issue #2），捕捉只在渲染期暴露的错误 | `node test/render.mjs` |
+| `test/native.mjs` | 有 better-sidebar 时**一个**标签页（issue #1）、没有时原生类型/面板/头部按钮、后激活时交接、卸载无残留 | `node test/native.mjs` |
+| `test/bundle-check.html` | 真实浏览器加载 bundle：一个标签页、order 46、title/icon 函数解析、重复挂载幂等、卸载后清空 | `chrome --headless=new --dump-dom …` |
 | `test/e2e-profile.mjs` | 真实 DSH profile 内：路由挂载、cookie 准入、两条终端分支、PTY 往返、resize 不断连 | 见 README |
 | `scripts/check-ssh.mjs` | 真实服务器：连接、UTF-8 读写、上传下载字节一致 | `node scripts/check-ssh.mjs` |
 
@@ -346,4 +365,21 @@ Windows 上**没有 exec bit**，上传 `.sh` / 二进制后远端不可执行�
 - `sidebar.right.pane.tab` slot —— 面板本体，内部用一条自己的 tab 条切换四个 pane；
 - `conversation.session.header.utilities` slot —— 会话头部的服务器图标，点一下 `sidebarRight.openTab(kind)`。
 
-结果是不装 better-sidebar 也能用完整功能，装了就自动换成更细的四个独立标签页（一次激活只选一种，避免两个入口同时出现）。代价是面板里四个 pane 必须共用一块宽度：所以 pane 用 `hidden` 保活而不是卸载 —— 否则切到文件页看一眼，终端的 socket 和 tmux 附着就都没了。
+结果是不装 better-sidebar 也能用完整功能，装了就在 better-sidebar 里多一个同款标签页（一次只激活一种入口，避免两个同时出现）。`v0.3.0` 把标签页从四个收成一个：四份入口把侧栏挤满，而面板内部本来就有标签条（issue #1）。代价是面板里四个 pane 必须共用一块宽度：所以 pane 用 `hidden` 保活而不是卸载 —— 否则切到文件页看一眼，终端的 socket 和 tmux 附着就都没了。
+
+### 8.8 界面重做：从「能用的面板」到原型本身（v0.3.0）
+
+v0.2.1 能跑通全部功能，但界面和 `ui/prototype.html` 是两套东西：原型是主机头 + 下划线标签条 + 居中状态页 + 底部状态栏，实现里是四个各自独立的扁平面板，配色还是随手挑的。用户的原话是「完全就是两个 UI」。这一版不是调样式，是把界面按原型重写：
+
+1. **一个组件，两个入口**。`client/workspace.jsx` 是唯一的面板，better-sidebar 标签页和原生右侧边栏都渲染它 —— 两个入口如果各写一份，视觉迟早再次分叉。
+2. **面板内部用标签条，不用四个顶层标签页**。`文件 / 终端 / 同步 / 转发 / 设置` 是面板里的五个 pane，`文件` 与 `终端` 需要连接，未连上时被连接门挡住（`GATED`）。
+3. **pane 用 `hidden` 保活**。切走不卸载：终端的 WebSocket、xterm 实例、tmux 附着都还在。卸载重建的代价是用户切去看一眼文件就把 shell 杀了。
+4. **JSX 必须用经典运行时**。客户端的模块表只解析 `react`，`require('react/jsx-runtime')` 在这里解析不了，所以 `build.mjs` 配的是 `jsx: 'transform'` + `jsxFactory: 'h'`。自动运行时会编译成功、加载失败，报错还发生在 `__ModuleLoader__` 里，很难定位。
+5. **样式单文件、`rs-` 前缀、`:where()` 降特异性**。面板和别的插件共用一份 document，`button { padding: 0 }` 这种 reset 会把 `.rs-btn` 的 padding 一起吃掉（曾经把「仅保存 / 测试连接」压成两个贴在一起的方块），改成 `.rs-root :where(button)` 后组件类才拿得回优先级。
+
+顺手修掉的两个真实缺陷（都由 issue #2 暴露）：
+
+- **密码没有输入的地方**。原实现只认密钥/agent，密码主机连不上时只报一句 `auth-failed`，用户无从下手。现在密码框出现在两处：连接门（认证方式是密码的主机直接显示，`autoFocus`，回车即连）和设置视图；密钥失败时还多一个「改用密码」把认证方式就地切过去。值只进内存（`secretStore`），永不落盘、不进日志。
+- **没有切换主机的入口**。连接门里列出全部主机（当前主机用强调色描边），面板标题栏的主机名点开是主机菜单（在线徽标 + 新建 / 管理）。两处都能切，不用绕去设置页。
+
+验证方式：`ui/preview.html`（不进包）用真实 React UMD 加载真实 `lib/client.js`，配假 API 与假 WebSocket，逐屏截图和原型比对；再用 CDP 驱动真实 DSH profile 截图复核 —— 亮色、暗色、连接门四态、五个视图都过了一遍。
