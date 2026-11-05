@@ -244,7 +244,7 @@ export function SettingsPane({
                 type="password"
                 value={form.password}
                 onChange={patch('password')}
-                placeholder="••••••••"
+                placeholder="输入密码"
                 onKeyDown={(event) => { if (event.key === 'Enter') void save(true) }}
               />
             </Field>
