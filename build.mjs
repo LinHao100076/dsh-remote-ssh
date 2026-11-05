@@ -29,7 +29,12 @@ const result = await build({
   target: ['chrome110', 'firefox110', 'safari16'],
   external: ['react', 'react-dom', 'react-dom/client'],
   loader: { '.css': 'text' },
-  jsx: 'automatic',
+  // Classic JSX: the module table only resolves `react`, not `react/jsx-runtime`,
+  // so the automatic runtime would fail to load inside DSH. Every `.jsx` file
+  // imports `createElement as h`, which is what the transform calls.
+  jsx: 'transform',
+  jsxFactory: 'h',
+  jsxFragment: 'Fragment',
   legalComments: 'none',
   minify,
   define: { 'process.env.NODE_ENV': '"production"' },
