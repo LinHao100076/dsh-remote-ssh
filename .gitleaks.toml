@@ -1,0 +1,12 @@
+# lib/ 是提交进版本库的构建产物，node_modules 会被内联进去。
+# ssh2 在模块加载时会用一段临时私钥探测 Node 的 Ed25519 支持
+# （node_modules/ssh2/lib/protocol/constants.js 的 eddsaSupported），
+# 那段字面量因此出现在 lib/server.mjs 里 —— 它不参与任何连接，也不是谁的凭据。
+#
+# 这里只放行这一条精确的字符串，不按文件整段放行：
+# 万一以后真的有人把私钥写进 bundle，仍然会报。
+title = "dsh-remote-ssh"
+
+[allowlist]
+description = "ssh2 用来探测 Ed25519 是否可用的临时密钥（上游常量，非凭据）"
+regexes = ['''MC4CAQAwBQYDK2VwBCIEIHKj\+sVa9WcD/q2DJUJaf43Kptc8xYuUQA4bOFj9vC8T''']
