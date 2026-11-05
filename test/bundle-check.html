@@ -84,40 +84,34 @@
       const ctx = makeCtx(service)
       exports.apply(ctx)
 
-      const ids = service.getTabs().map((tab) => tab.id).sort()
+      const ids = service.getTabs().map((tab) => tab.id)
       const orders = service.getTabs().map((tab) => tab.order).sort((a, b) => a - b)
 
       const fail = (message) => { throw new Error(message) }
-      const EXPECTED = [
-        'dsh-remote-ssh:files',
-        'dsh-remote-ssh:forward',
-        'dsh-remote-ssh:sync',
-        'dsh-remote-ssh:terminal',
-      ]
-      if (JSON.stringify(ids) !== JSON.stringify(EXPECTED)) {
-        fail(`tabs mismatch: ${JSON.stringify(ids)}`)
+      if (JSON.stringify(ids) !== JSON.stringify(['dsh-remote-ssh'])) {
+        fail(`expected exactly one tab — got ${JSON.stringify(ids)}`)
       }
-      if (JSON.stringify(orders) !== JSON.stringify([46, 47, 48, 49])) {
-        fail(`tab order must be 46,47,48,49 — got ${JSON.stringify(orders)}`)
+      if (JSON.stringify(orders) !== JSON.stringify([46])) {
+        fail(`tab order must be 46 — got ${JSON.stringify(orders)}`)
       }
 
-      /* 2. the descriptors must satisfy the contract the sidebar resolves:
+      /* 2. the descriptor must satisfy the contract the sidebar resolves:
             title/icon may be functions (textOf/iconOf call them), and the order
             decides the tab strip position. */
-      const filesTab = service.getTab('dsh-remote-ssh:files')
+      const remoteTab = service.getTab('dsh-remote-ssh')
       const titleOf = (value) => (typeof value === 'function' ? value() : value)
       const labels = service.getTabs().map((tab) => titleOf(tab.title))
       const icons = service.getTabs().map((tab) => (typeof tab.icon === 'function' ? tab.icon(16) : tab.icon))
       const components = service.getTabs().filter((tab) => typeof tab.component !== 'function')
-      if (labels.some((label) => typeof label !== 'string' || label === '')) fail(`bad labels: ${JSON.stringify(labels)}`)
-      if (icons.length !== 4) fail('every tab needs an icon')
-      if (components.length > 0) fail('every tab needs a component')
-      if (typeof filesTab !== 'object') fail('files tab missing')
+      if (JSON.stringify(labels) !== JSON.stringify(['远程 SSH'])) fail(`bad labels: ${JSON.stringify(labels)}`)
+      if (icons.length !== 1) fail('the tab needs an icon')
+      if (components.length > 0) fail('the tab needs a component')
+      if (typeof remoteTab !== 'object') fail('remote tab missing')
 
       /* 3. a second mount (HMR re-apply) must not throw or duplicate */
       exports.apply(ctx)
       const afterSecond = service.getTabs().length
-      if (afterSecond !== 4) fail(`re-apply duplicated tabs: ${afterSecond}`)
+      if (afterSecond !== 1) fail(`re-apply duplicated tabs: ${afterSecond}`)
 
       /* 4. and unlinking must leave nothing behind */
       for (const dispose of ctx.disposers) dispose()
@@ -130,7 +124,7 @@
       const bare = makeCtx(undefined)
       exports.apply(bare)
       if (bare.disposers.length !== 1) fail(`expected one effect scope for the native entry, got ${bare.disposers.length}`)
-      if (service.getTabs().length !== 4) fail('a bare context must not touch the better-sidebar service')
+      if (service.getTabs().length !== 1) fail('a bare context must not touch the better-sidebar service')
       for (const dispose of bare.disposers) dispose()
 
       report({
@@ -146,7 +140,8 @@
         afterDispose,
         bareDisposers: bare.disposers.length,
         styles: document.querySelectorAll('style').length,
-        filesTabHasRoute: typeof filesTab === 'object',
+        remoteTabHasComponent: typeof remoteTab.component === 'function',
+        panes: Object.keys(exports.PANES).sort(),
         hasNativeEntry: typeof exports.NATIVE === 'object' && typeof exports.NATIVE.RemoteWorkspace === 'function',
       })
     } catch (error) {

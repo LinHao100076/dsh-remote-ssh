@@ -1,5 +1,5 @@
 /**
- * Render test: every panel is mounted once with real React.
+ * Render test: the panel and every pane are mounted once with real React.
  *
  * The other suites never render a component — they check registration and the
  * API — so a crash inside a render tree (a typo, a hook called conditionally, a
@@ -8,7 +8,9 @@
  * loudly instead.
  *
  * Effects do not run during server rendering, so no request is made: this proves
- * the initial paint of each tab, which is where such bugs live.
+ * the initial paint of each screen, which is where such bugs live. Two of the
+ * assertions pin issue #2 directly: the connect page and the settings pane must
+ * both offer a password field.
  *
  * Run: `node test/render.mjs`
  */
@@ -53,76 +55,117 @@ assert.ok(exported.PANES !== undefined, 'the bundle must expose its panes')
 /* ── a context shaped like the one the sidebar passes ─────────────────── */
 
 const ctx = {
-  betterSidebar: { hostRouteUrl: (path) => `http://localhost/${path}` },
   get: () => undefined,
   inject: () => {},
   effect: () => () => {},
 }
 
-/** Mount one pane and return its markup. */
-function render(name) {
-  const Pane = exported.PANES[name]
-  assert.equal(typeof Pane, 'function', `${name} pane must be exported`)
-  return renderToString(React.createElement(Pane, {
-    ctx,
-    scope: { sessionId: 'test-session' },
-    tab: { type: `dsh-remote-ssh:${name}` },
-    visible: false,
-    expanded: true,
-    revealed: true,
-  }))
+const passwordHost = {
+  id: 'host-1',
+  name: 'prod-web-01',
+  host: '10.0.3.21',
+  port: 22,
+  user: 'ubuntu',
+  auth: { type: 'password' },
 }
 
-/* ── every pane paints, with the right empty state ────────────────────── */
+const base = {
+  ctx,
+  sessionId: 'test-session',
+  hostId: '',
+  host: undefined,
+  hosts: [],
+  statuses: {},
+  hostInfo: undefined,
+  visible: false,
+  active: false,
+}
+
+/** Mount one exported screen and return its markup. */
+function render(name, props = {}) {
+  const Pane = exported.PANES[name]
+  assert.equal(typeof Pane, 'function', `${name} pane must be exported`)
+  return renderToString(React.createElement(Pane, { ...base, ...props }))
+}
+
+/* ── the connect gate ─────────────────────────────────────────────────── */
+
+const empty = render('connect')
+assert.match(empty, /连接远程服务器/, 'connect gate offers the empty state')
+assert.match(empty, /新建 SSH 连接/, 'connect gate can start a new host')
+
+const passwordGate = render('connect', {
+  hosts: [passwordHost],
+  host: passwordHost,
+  status: 'disconnected',
+})
+assert.match(passwordGate, /type="password"/, 'a password host gets a field on the connect gate (#2)')
+assert.match(passwordGate, /仅本次会话/, 'the field says the secret is not persisted')
+assert.match(passwordGate, /连接/, 'the gate can connect')
+
+const failed = render('connect', {
+  hosts: [passwordHost],
+  host: passwordHost,
+  status: 'error',
+  error: 'All configured authentication methods failed',
+  errorCode: 'auth-failed',
+})
+assert.match(failed, /认证失败/, 'a failed attempt is named, not swallowed')
+assert.match(failed, /不可|authentication/i, 'the failure reason reaches the panel')
+
+const connecting = render('connect', { hosts: [passwordHost], host: passwordHost, status: 'connecting' })
+assert.match(connecting, /正在连接/, 'the handshake has its own state')
+assert.match(connecting, /prod-web-01/, 'the handshake names the host')
+assert.match(connecting, /建立 SSH 通道/, 'the handshake names what it is doing')
+
+/* ── the panes ────────────────────────────────────────────────────────── */
 
 const files = render('files')
-assert.match(files, /rs-root/, 'files pane renders its root')
-assert.match(files, /还没有远程主机/, 'files pane shows its empty state')
+assert.match(files, /rs-bar/, 'files pane renders its toolbar')
+assert.match(files, /rs-tree/, 'files pane renders its tree')
 
 const terminal = render('terminal')
-assert.match(terminal, /rs-root/)
-assert.match(terminal, /远程终端|还没有远程主机/, 'terminal pane has a header or an empty state')
+assert.match(terminal, /rs-ttabs/, 'terminal pane renders its tab strip')
+assert.match(terminal, /rs-term-status/, 'terminal pane reports the session')
 
-const sync = render('sync')
-assert.match(sync, /rs-root/)
-assert.match(sync, /同步/, 'sync pane header')
+const sync = render('sync', { snapshot: { mappings: [], queue: [], conflicts: [], stats: {} } })
 assert.match(sync, /还没有路径映射/, 'sync pane empty state')
 assert.match(sync, /建立映射后/, 'sync pane explains the contract before anything is configured')
 
 const forward = render('forward')
-assert.match(forward, /rs-root/)
-assert.match(forward, /转发/, 'forward pane header')
 assert.match(forward, /还没有转发规则/, 'forward pane empty state')
-assert.match(forward, /direct-tcpip/, 'forward pane footer names the mechanism')
-// The guidance that makes the feature usable must be on screen, not only in docs.
 assert.match(forward, /远端地址|127\.0\.0\.1/, 'forward pane hints at the target address semantics')
 
-/* ── and it must survive a second render (no module-level state leak) ─── */
+const settings = render('settings', { host: passwordHost, hostId: passwordHost.id, hosts: [passwordHost] })
+assert.match(settings, /type="password"/, 'settings offers a password field for a password host (#2)')
+assert.match(settings, /保存并连接/, 'settings can save and connect in one step')
+assert.match(settings, /删除主机/, 'settings can remove the host')
 
-assert.equal(render('forward'), forward, 'rendering twice is deterministic')
+const blankSettings = render('settings', { creating: true, hosts: [] })
+assert.match(blankSettings, /新建连接/, 'settings doubles as the create form')
+assert.match(blankSettings, /创建并连接/, 'the create form can connect right away')
 
-/* ── the native workspace (DSH's own right sidebar) ───────────────────── */
-/* This is the entry a profile without better-sidebar sees, so it has to paint
-   without any better-sidebar props at all: no `ctx.betterSidebar`, no `scope`,
-   and a seat that may or may not provide the tab hook. */
+/* ── the workspace ────────────────────────────────────────────────────── */
 
 const Workspace = exported.NATIVE?.RemoteWorkspace
-assert.equal(typeof Workspace, 'function', 'the native workspace must be exported')
+assert.equal(typeof Workspace, 'function', 'the workspace must be exported')
 
-const bare = renderToString(React.createElement(Workspace, { ctx, sessionId: 'test-session' }))
-assert.match(bare, /rs-wtabs/, 'workspace renders its own tab strip')
-for (const label of ['文件', '终端', '同步', '转发']) {
-  assert.match(bare, new RegExp(label), `workspace offers the ${label} pane`)
-}
-assert.match(bare, /rs-root/, 'the active pane paints inside the workspace')
-assert.match(bare, /rs-wpane/, 'panes are mounted into the workspace body')
+const workspace = renderToString(React.createElement(Workspace, { ctx, sessionId: 'test-session' }))
+assert.match(workspace, /rs-phead/, 'workspace renders its host header')
+assert.match(workspace, /rs-pfoot/, 'workspace renders its footer')
+assert.match(workspace, /连接远程服务器/, 'with no host the workspace shows the connect gate')
+assert.match(workspace, /远程 SSH/, 'the workspace names the plugin')
 
 const seated = renderToString(React.createElement(Workspace, {
   ctx,
   sessionId: 'test-session',
   useTabInfo: () => ({ tab: { visible: false, navigation: { params: { hostId: 'host-1' } } } }),
 }))
-assert.match(seated, /rs-wtabs/, 'workspace paints with the seat hook present')
+assert.match(seated, /rs-pfoot/, 'workspace paints with the seat hook present')
+
+/* ── and it must survive a second render (no module-level state leak) ─── */
+
+assert.equal(renderToString(React.createElement(Workspace, { ctx, sessionId: 'test-session' })), workspace)
 
 /* ── the header opener ────────────────────────────────────────────────── */
 
@@ -130,4 +173,4 @@ const opener = renderToString(React.createElement(exported.NATIVE.RemoteHeaderBu
 assert.match(opener, /rs-icon/, 'header opener uses the plugin icon button')
 assert.match(opener, /远程 SSH/, 'header opener is labelled')
 
-console.log('render: ok (four panes + native workspace paint, empty states present, no DOM needed)')
+console.log('render: ok (gate four states, five views, workspace paint; password fields present)')
