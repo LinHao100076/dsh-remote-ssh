@@ -48,6 +48,8 @@ docs/assets/       README 用的面板截图（由 ui/prototype.html 生成）
 ui/prototype.html  UI 原型（单文件，浏览器直接打开，可切深色）——界面以它为准
 test/              十三轮测试（见下）
 scripts/           对着真实服务器跑的验收脚本；`dev-remote.mjs` 是本地假远端（exec 走真 shell，SFTP 只读）
+.github/           issue / PR 模板、CI（Node 20 / 22 / 24 各跑一遍十三轮测试）、dependabot
+.gitleaks.toml     秘密扫描配置：只放行 ssh2 那段 Ed25519 探针密钥（见 SECURITY.md）
 ```
 
 ## 先看原型
