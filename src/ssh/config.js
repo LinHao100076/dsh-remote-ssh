@@ -8,12 +8,70 @@
  * connectable hosts).
  * @module dsh-remote-ssh/ssh/config
  */
-import { existsSync, globSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { expandHome } from './paths.js'
 
 const MAX_INCLUDE_DEPTH = 4
+
+/**
+ * Turn one glob segment into a matcher. Only `*` and `?` are special; everything
+ * else (dots, brackets) is literal.
+ */
+function segmentMatcher(segment) {
+  const escaped = segment.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`^${escaped.replace(/\*/g, '.*').replace(/\?/g, '.')}$`)
+}
+
+/**
+ * Expand one `Include` pattern into existing absolute paths.
+ *
+ * `node:fs` only grew `globSync` in Node 22 while `engines` promises Node 20 --
+ * and importing a missing named export is a hard failure at *load* time, so the
+ * whole plugin refused to start there. ssh configs only glob the way this
+ * handles (`Include config.d/*`, occasionally two levels deep), so the pattern
+ * is walked segment by segment with `readdirSync`.
+ *
+ * `**` and brace expansion are deliberately unsupported: returning nothing is
+ * better than matching something unexpected in someone else's ssh config.
+ *
+ * @param {string} pattern - pattern from an `Include` line, `~` already expanded.
+ * @param {string} cwd - base directory for relative patterns.
+ * @returns {string[]} absolute paths that exist, in directory order.
+ */
+export function expandGlob(pattern, cwd = process.cwd()) {
+  const trimmed = String(pattern ?? '').trim()
+  if (trimmed === '') return []
+  const drive = /^([A-Za-z]:)[\\/]/.exec(trimmed)
+  const rooted = trimmed.startsWith('/') || drive !== null
+  const body = rooted ? trimmed.replace(/^[A-Za-z]:[\\/]?/, '').replace(/^\/+/, '') : trimmed
+  const segments = body.split(/[\\/]+/).filter((segment) => segment !== '' && segment !== '.')
+  const root = trimmed.startsWith('/') ? '/' : drive !== null ? `${drive[1]}/` : resolve(cwd)
+
+  let paths = [root]
+  for (const segment of segments) {
+    if (!/[*?]/.test(segment)) {
+      paths = paths.map((base) => join(base, segment))
+      continue
+    }
+    const matches = segmentMatcher(segment)
+    const next = []
+    for (const base of paths) {
+      let entries
+      try {
+        entries = readdirSync(base, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        if (matches.test(entry.name)) next.push(join(base, entry.name))
+      }
+    }
+    paths = next
+  }
+  return paths.filter((path) => existsSync(path))
+}
 
 /** Strip a trailing `#` comment that is not inside quotes. */
 function stripComment(line) {
@@ -49,15 +107,8 @@ function readConfigFile(path, depth, seen) {
     if (directive.key === 'include') {
       for (const pattern of directive.value.split(/\s+/).filter(Boolean)) {
         const target = expandHome(pattern)
-        let matches = []
-        try {
-          matches = globSync(target, { cwd: join(homedir(), '.ssh') })
-        } catch {
-          matches = []
-        }
-        for (const match of matches) {
-          const resolved = match.startsWith('/') ? match : join(homedir(), '.ssh', match)
-          lines.push(...readConfigFile(resolved, depth + 1, seen))
+        for (const match of expandGlob(target, join(homedir(), '.ssh'))) {
+          lines.push(...readConfigFile(match, depth + 1, seen))
         }
       }
       continue

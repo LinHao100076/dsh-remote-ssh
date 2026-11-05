@@ -15,6 +15,10 @@
 
 - `package.json` 补齐 `repository` / `homepage` / `bugs` / `author` 与更完整的 `keywords`。
 
+### 修复
+
+- **Node 20 上插件完全无法加载。** `src/ssh/config.js` 从 `node:fs` 里 import 了 `globSync`，那是 Node 22 才加的导出；缺少名字导出会在**模块加载阶段**直接抛 `SyntaxError`，整份宿主端 bundle 起不来，而 `engines` 一直声明 `>=20`。现在 `Include` 的通配自己按路径段展开（支持 `*` 和 `?`），不再依赖 `globSync`。这个问题本机永远测不出来（开发机是 Node 22），是 CI 在 node 20 上跑第一遍就抓到的 —— `test/ssh.mjs` 补了 6 条断言把它钉住。
+
 ## 0.6.0 — 2026-11-05
 
 socks5 动态转发与 `-R` 反向转发。

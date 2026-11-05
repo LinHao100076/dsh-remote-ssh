@@ -16,6 +16,9 @@
  */
 import assert from 'node:assert/strict'
 import { generateKeyPairSync } from 'node:crypto'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
 import ssh2 from 'ssh2'
 
 const bundle = process.argv.includes('--bundle') || process.env.RS_BUNDLE === '1'
@@ -146,11 +149,51 @@ assert.equal(retry.status('retry'), 'disconnected', 'a missing password must lea
 await retry.ensure({ ...base, id: 'retry', auth: { type: 'password', password: 'p' } })
 assert.equal(retry.status('retry'), 'connected', 'the same host must connect once the password arrives')
 
+/* --- ssh config: `Include` globbing without `node:fs.globSync` --------------
+
+   `globSync` landed in Node 22 while `engines` promises Node 20, and importing a
+   missing named export fails at *load* time — so on Node 20 the plugin did not
+   even start, and no local run could catch it (the dev machine is on 22). CI on
+   the oldest supported Node caught it; this section keeps it caught without
+   needing that runner. The helper always comes from `src/`, in both modes: it is
+   a pure path function and bundling it changes nothing but the import path. */
+const { expandGlob } = await import('../src/ssh/config.js')
+
+const cfgRoot = mkdtempSync(join(tmpdir(), 'dsh-ssh-cfg-'))
+mkdirSync(join(cfgRoot, 'config.d'), { recursive: true })
+writeFileSync(join(cfgRoot, 'config.d', '01-base'), 'Host a\n  HostName 10.0.0.1\n')
+writeFileSync(join(cfgRoot, 'config.d', '02-extra'), 'Host b\n  HostName 10.0.0.2\n')
+writeFileSync(join(cfgRoot, 'config.d', 'notes.txt'), 'not a config\n')
+
+assert.deepEqual(
+  expandGlob('config.d/*', cfgRoot).map((path) => basename(path)).sort(),
+  ['01-base', '02-extra', 'notes.txt'],
+  'a bare star matches every entry',
+)
+assert.deepEqual(
+  expandGlob('config.d/0*', cfgRoot).map((path) => basename(path)).sort(),
+  ['01-base', '02-extra'],
+  'a prefix star narrows the set',
+)
+assert.deepEqual(
+  expandGlob('config.d/?otes.txt', cfgRoot).map((path) => basename(path)),
+  ['notes.txt'],
+  '? matches exactly one character',
+)
+assert.deepEqual(
+  expandGlob(join(cfgRoot, 'config.d', '01-*'), cfgRoot).map((path) => basename(path)),
+  ['01-base'],
+  'an absolute pattern ignores cwd',
+)
+assert.deepEqual(expandGlob('nowhere.d/*', cfgRoot), [], 'no match is an empty list, not a throw')
+assert.deepEqual(expandGlob('', cfgRoot), [], 'an empty pattern matches nothing')
+rmSync(cfgRoot, { recursive: true, force: true })
+
 pool.dispose()
 bad.dispose()
 pinned.dispose()
 retry.dispose()
 server.close()
 
-console.log(`ssh[${label}]: ok (handshake, exec, pty channel, TOFU pin, auth + host-key errors, issue #5 retry)`)
+console.log(`ssh[${label}]: ok (handshake, exec, pty channel, TOFU pin, auth + host-key errors, issue #5 retry, Include glob)`)
 process.exit(0)
