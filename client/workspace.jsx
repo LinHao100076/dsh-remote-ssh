@@ -23,6 +23,7 @@ import { createElement as h, useCallback, useEffect, useRef, useState } from 're
 import {
   api, hostStore, refreshHosts, refreshStatuses, secretStore, usePolling, useStore,
 } from './state.js'
+import { ensureStyles } from './inject-styles.js'
 import { Dot, Icon, IconButton } from './ui.jsx'
 import { ConnectView } from './connect-view.jsx'
 import { FilesPane } from './files-view.jsx'
@@ -77,6 +78,17 @@ export function Workspace(props) {
   const [toast, setToast] = useState('')
   const primaryHost = useRef('')
   const toastTimer = useRef(0)
+  const rootRef = useRef(null)
+
+  // The panel may be hosted by a document the factory never saw (a popped-out or
+  // split pane has its own `<head>`), so the sheets are asserted against the
+  // document that actually carries `.rs-root`. Issue #3: unstyled markup with a
+  // stylesheet sitting in another document's head looks identical to no CSS at
+  // all.
+  const bindRoot = useCallback((node) => {
+    rootRef.current = node
+    if (node !== null) ensureStyles(node.ownerDocument)
+  }, [])
 
   const flash = useCallback((text) => {
     setToast(text)
@@ -300,7 +312,7 @@ export function Workspace(props) {
   }
 
   return (
-    <div className="rs-root">
+    <div className="rs-root" ref={bindRoot}>
       <header className="rs-phead">
         <div className="rs-hostline">
           <span className="rs-hostico"><Icon name="server" size={15} /></span>

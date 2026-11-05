@@ -406,3 +406,27 @@ v0.2.1 能跑通全部功能，但界面和 `ui/prototype.html` 是两套东西�
 
 - 解压后的目录**周围没有任何 node_modules**，`import('./package/lib/server.mjs')` 正常导出 `apply/name/inject/SshPool`；
 - 用 `link:` 把这个解压目录装进一个带 web-app 的 profile，`dsh` 启动无未激活警告，`hosts.list` 返回真实数据，`hosts.info` 对着真实主机返回 `auth-failed`（说明 bundled ssh2 真的把加密握手走到认证阶段了）。
+
+### 8.10 样式要跟着面板走，而不是跟着模块走（v0.3.2，issue #3）
+
+issue #3 的截图是一整块「裸 HTML」：标签条在、五个视图按钮在、`连接 10.86.55.110` 是 `<h3>` 的默认字号、按钮是凸起的原生外框、输入框没有边框 —— 结构全对，样式一条都没生效。
+
+在最干净的环境里复现不出来。三个环境（0.2.0 + better-sidebar、0.2.1-rc.2 + better-sidebar、0.2.1-rc.2 原生右栏）都是 `{styleTag: true, rules: 212}`，面板样式正常。于是把定位搬到真机：拿用户 `desktop` profile 的整份副本、同一个 0.2.1-rc.2 运行时起服务，仍然正常；最后直接拉起桌面应用本身（`--remote-debugging-port`），`origin` 是 `dsh-app://app`，`#dsh-remote-ssh/panel` 存在、`sheet.cssRules.length === 212`、没有 `sheet === null` 的元素 —— 面板渲染得和原型一致。
+
+所以 CSS 从来不是被打包丢了，也不是被别的插件覆盖了，更不是 CSP 拦了（桌面端主窗口走 `dsh://app` 自定义协议，`serveWebDocument` 只发 `content-type`）。问题在注入方式：
+
+```js
+function injectStyles(id, css) {
+  if (document.getElementById(id) !== null) return   // ← 先到先得
+  ...
+}
+```
+
+「同 id 已存在就跳过」只在「一次文档、一次求值」时成立。而客户端模块**并不总和文档一起重新求值**：profile 里装着 `client-hmr`，插件在磁盘上被换掉时模块会在同一个文档里被热替换。于是 head 里留着上一版构建的 `<style>`，DOM 是新的那一版 —— 旧表里根本没有 `.rs-phead` / `.rs-hostline` 这些重写后才有类名（可核：`git show af26ac8^:client/styles.js` 里这两个类名出现 0 次），新标记自然一条规则都匹配不上，看起来就是「样式全没了」。重启应用换个 document 就正常，这也解释了为什么干净环境全都好。
+
+修法是两条不依赖具体诱因的规矩：
+
+1. **样式表属于承载面板的那个 document**，不属于模块碰巧被求值时的那个。注入改成 `ensureStyles(doc)`，`Workspace` 用 ref 回调拿 `node.ownerDocument` 再断言一次 —— 弹出/分栏面板是独立 document，有自己的 `<head>`，只往模块级 `document` 注入会漏。
+2. **文本不一致就覆盖**。`syncStyle` 比较 `existing.textContent !== css`，不一致就地改写；避免旧表永久遮蔽新面板。
+
+留在 `client/inject-styles.js`，不 import 任何 CSS，于是 `test/styles.mjs` 能在纯 Node 下用假 document 直接跑：注入、幂等（同一节点、不重复追加）、旧表就地刷新（issue #3 的回归）、跨 document 不串味、没有 head 不抛。`apply()` 里的一次性注入保留，作为首屏兜底。

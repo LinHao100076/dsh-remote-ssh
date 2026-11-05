@@ -14,14 +14,16 @@
  * first and handed over when better-sidebar's service arrives later, so a
  * profile with both never shows two competing entries.
  *
- * Styling is injected once from the factory (xterm's own CSS included), which is
- * the bundling convention for client modules: no separate stylesheet URL is
- * served.
+ * Styling is injected from the factory (xterm's own CSS included) and re-checked
+ * by the panel itself, which is the bundling convention for client modules: no
+ * separate stylesheet URL is served. See `inject-styles.js` for why the sheet is
+ * refreshed rather than assumed.
  * @module dsh-remote-ssh/client
  */
 import { createElement as h } from 'react'
 import xtermCss from '@xterm/xterm/css/xterm.css'
 import { CSS } from './styles.js'
+import { ensureStyles, registerStyle } from './inject-styles.js'
 import { Icon } from './ui.jsx'
 import { KIND, RemoteHeaderButton, Workspace } from './workspace.jsx'
 import { ConnectView } from './connect-view.jsx'
@@ -50,14 +52,8 @@ export const PANES = {
 /** The native workspace panel and its header opener (see `workspace.jsx`). */
 export const NATIVE = { KIND, RemoteWorkspace: Workspace, RemoteHeaderButton }
 
-/** Inject a stylesheet once per document. */
-function injectStyles(id, css) {
-  if (document.getElementById(id) !== null) return
-  const style = document.createElement('style')
-  style.id = id
-  style.textContent = css
-  document.head.append(style)
-}
+registerStyle('dsh-remote-ssh/xterm', xtermCss)
+registerStyle('dsh-remote-ssh/panel', CSS)
 
 /** Tab icon factory (host theme colour, size adapts to the strip). */
 function tabIcon(name) {
@@ -164,8 +160,7 @@ function mountNative(ctx) {
  * @param {object} ctx - client cordis context (services are injected lazily).
  */
 export function apply(ctx) {
-  injectStyles('dsh-remote-ssh/xterm', xtermCss)
-  injectStyles('dsh-remote-ssh/panel', CSS)
+  ensureStyles()
 
   const present = typeof ctx.get === 'function' ? ctx.get('betterSidebar') : undefined
   if (present !== undefined) {

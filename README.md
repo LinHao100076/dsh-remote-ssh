@@ -24,7 +24,7 @@ lib/client.js      构建产物：客户端 bundle（esbuild 打包，由宿主�
 lib/server.mjs     构建产物：宿主端 bundle（ssh2 / ws / chokidar 全打进来，包里零运行期依赖）
 docs/design.md     架构取舍、平台发现、问题清单、里程碑
 ui/prototype.html  UI 原型（单文件，浏览器直接打开，可切深色）——界面以它为准
-test/              六组测试（见下）
+test/              八组测试（见下）
 scripts/           对着真实服务器跑的验收脚本
 ```
 
@@ -130,7 +130,7 @@ ssh -L 6379:127.0.0.1:6379 me@server
 ## 验证
 
 ```bash
-npm test             # 先自动 build（两个 bundle），再跑七轮 Node 测试
+npm test             # 先自动 build（两个 bundle），再跑八轮 Node 测试
 ```
 
 `npm test` 有 `pretest` 钩子，会先重建两个 bundle —— 否则渲染测试可能跑在旧产物上，改了代码却仍报绿。
@@ -143,6 +143,7 @@ npm test             # 先自动 build（两个 bundle），再跑七轮 Node �
 | `test/forward.mjs` | 真实 TCP 往返穿透 `direct-tcpip`、字节统计、端口占用、停止后拒绝、autoStart、落盘无密码 |
 | `test/render.mjs` | 用真实 React（`react-dom/server`）渲染五个视图 + 连接门四态 + 原生工作区，并断言密码框存在（issue #2），捕捉只在渲染时炸的错 |
 | `test/native.mjs` | 两个入口的取舍：有 better-sidebar 时**一个**标签页、没有时原生类型/面板/头部按钮、后激活时的交接、卸载后无残留 |
+| `test/styles.mjs` | 样式表注入：落到承载面板的那个 document、重复调用幂等、上一版残留的旧表就地刷新（issue #3 回归）、没有 head 不抛 |
 
 浏览器产物检查（在真实 Chrome 里加载 bundle，验证标签页注册、order 46、重复挂载幂等、卸载后清空）：
 
