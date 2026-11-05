@@ -588,3 +588,56 @@ async #connect(host) {
 - **假远端要会说 `tcpip-forward`。** 测试里的 ssh2 `Server` 收到全局请求自己 `listen`，入站时用 `client.forwardOut(boundAddr, boundPort, peerAddr, peerPort)` 推通道。参数顺序踩过一次：前两个是**服务器绑定的那一对**，客户端拿它去匹配自己的登记表；写反了每个通道都会被客户端拒绝，症状是「连接建立后立刻关闭」，看起来像业务 bug。
 
 验证：`test/socks5.mjs` 钉协议层（拆包、管道化、三种地址、`BIND`、0 端口、空域名、非 SOCKS、超时、错误码），`test/forward.mjs` 三种形状都跑真实 TCP 往返，其中 `-R` 会故意把底层连接掐掉，验证重连后端口被重新申请回来、隧道自动恢复。界面在真实浏览器里点过一遍：`-D` 的 SOCKS 端口收到 `echo:via-socks`，`-L` 收到 `echo:via-local`，`-R` 收到 `echo:via-reverse`。
+
+### 8.16 跳板：从「一条字符串」到「一串跳板」（v0.7.0 计划）
+
+原型已经按这一版做了：`ui/prototype.html?view=jump`。下面是为什么这么改，以及动手时要盯住的几处。
+
+**现状是「伪一跳」。** `#openWithJump(host, options, depth)` 收了 `depth` 却从不递归 —— 传进去的 0 只用于那句 `depth > 2` 的守卫。真实行为是：拿 `proxyJump` 字符串里 `@` 后面那一段当主机名（`ProxyJump a,b` 的 `,b` 会被当成主机名的一部分），端口写死 `22`，凭据用 `host.jumpAuth ?? host.auth`，也就是**默认拿目标机的账号和密钥去登跳板**。单跳、跳板在 22、跳板与目标同账号，三个条件同时成立时才不出事；这正是「自己配的时候能用，别人一配就坏」的典型。
+
+**模型换成有序的 hops。** 跳板不是「一个地址」，是「一条链路」，字段必须能承载每一跳自己的端口与凭据：
+
+```js
+jump: {
+  hops: [
+    { host: '10.0.0.5', port: 22,   user: 'jump',
+      auth: { type: 'key', keyPath: '~/.ssh/id_ed25519' }, fingerprint: 'SHA256:…' },
+    { host: '10.0.0.9', port: 2222, user: 'ops',
+      auth: { type: 'agent' },                             fingerprint: 'SHA256:…' },
+  ],
+}
+```
+
+顺序即流量顺序（`hops[0]` 最先连）。迁移在 `Store.load()` 里做：旧 `proxyJump: "u@h"` 变成一跳 `{ user:'u', host:'h', port:22, auth:{ type:'inherit' } }`；`~/.ssh/config` 的 `ProxyJump a,b` 在 `config.js` 里展开成两跳，每跳的 host/port/user 从它**自己那个 Host 段**取，而不是抄目标机的。`inherit` 这个认证类型保留 —— 它就是把今天的行为显式化，界面上标黄提示「建议拆开」。
+
+**连接算法：每跳都用上一跳的 `direct-tcpip` 当 socket。**
+
+```js
+let prev                                  // 上一跳开出来的 stream
+for (const [i, hop] of hops.entries()) {
+  const client = new Client()
+  const options = hopOptions(hop)          // 每跳自己的 port / user / auth / 指纹
+  if (prev !== undefined) options.sock = prev
+  await ready(client, options)
+  const next = hops[i + 1] ?? target
+  prev = await call(client, 'forwardOut', '127.0.0.1', 0, next.host, next.port)
+}
+targetOptions.sock = prev
+```
+
+四个必须盯住的点：
+
+1. **`forwardOut` 的目标是「下一跳」，不是目标机。** 写成 `options.host/options.port` 会让第 1 跳直接去连目标 —— 而它本来就因为连不到目标才需要跳板，于是永远超时。
+2. **每跳独立 TOFU。** `fingerprint` 存在 hop 上，和主机那一套同一个 `#verifyHost`；跳板换指纹要单独报，不能和目标的指纹混成一个字段。
+3. **拆链顺序从里到外。** 目标 → 最后一跳 → … → 第一跳。反了会让还活着的通道指向已关闭的 socket。
+4. **错误必须带跳号。** `{ code:'jump-auth-failed', hop: 2, host:'10.0.0.9', port: 2222 }`。界面上说「第 2 跳认证失败」，而不是把 `Permission denied` 直接贴给用户 —— 一跳时看不出差别，两跳时「哪台拒了我」是唯一有用的问题。
+
+**界面：链路图 + 每跳一张卡。** 设置页只留一行摘要（`2 跳  bastion-a:22 → bastion-b:2222  [编辑]`），不再给一个自由文本框 —— 一个字符串输入框没法表达「第二跳端口是 2222、账号是 ops」。编辑放在独立视图里：上方是 `本机 → 第1跳 → … → 目标` 的链路图（可「测试整条链路」逐跳点亮），下方每跳一张可展开的卡，能改端口、能换认证、能上移下移删除。连接中的进度条按跳分级，失败页按跳定位并给「去改这一跳」。
+
+**边界（写清楚，免得被误解）：**
+
+- 每一跳都必须支持 `direct-tcpip`（`ssh -W` 做的事）。精简 sshd 或 `PermitTunnel no` 会拒；报错要指名是第几跳，而不是「连接超时」。
+- 跳板只决定**怎么到达目标**。`-L` / `-D` / `-R` 仍然挂在目标机那条连接上，不存在「从第 2 跳出去开端口」。
+- 不做：跳板层的 `-R`、每跳独立 keepalive、多主机共享一跳（ControlMaster 式复用）。共享一跳看着省一次握手，代价是任何一台主机断开都得判断「这条跳板通道还有没有人用」，在 `SshPool` 里引入引用计数远比省下的 20ms 贵。
+
+**改动面：** `src/ssh/pool.js`（链路循环、拆链、错误归位）、`src/ssh/config.js`（`ProxyJump` 展开成多跳）、`client/settings-view.jsx`（摘要行）、新增 `client/jump-view.jsx`（链路图与每跳卡片）、`test/forward.mjs` 的假 sshd 补串联的 `direct-tcpip`。测试要钉四件事：两跳真的连通、第二跳的 2222 生效、第二跳凭据与目标机不同也能连、第二跳挂掉时错误里 `hop === 2`。
