@@ -169,7 +169,7 @@ export function ConnectView({
                 value={password}
                 onChange={setPassword}
                 autoFocus
-                placeholder="••••••••"
+                placeholder="输入密码"
                 onKeyDown={(event) => { if (event.key === 'Enter') submit() }}
               />
             </Field>
