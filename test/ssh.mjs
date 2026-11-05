@@ -6,12 +6,21 @@
  * the error classification the UI branches on. SFTP is not implemented by the
  * fake server — that path needs a real host (see `scripts/check-ssh.mjs`).
  *
- * Run: `node test/ssh.mjs`
+ * Run: `node test/ssh.mjs`         — against `src/` (imports `ssh2` normally)
+ *      `node test/ssh.mjs --bundle` — against `lib/server.mjs`, where `ssh2`
+ *                                        has been inlined by esbuild
+ *
+ * The second form is the one that matters for installs: the published package
+ * ships no `dependencies`, so if the inlined copy of `ssh2` cannot complete a
+ * handshake, users find out instead of us.
  */
 import assert from 'node:assert/strict'
 import { generateKeyPairSync } from 'node:crypto'
 import ssh2 from 'ssh2'
-import { SshPool } from '../src/ssh/pool.js'
+
+const bundle = process.argv.includes('--bundle') || process.env.RS_BUNDLE === '1'
+const { SshPool } = await import(bundle ? '../lib/server.mjs' : '../src/ssh/pool.js')
+const label = bundle ? 'bundle' : 'src'
 
 const { Server } = ssh2
 
@@ -119,5 +128,5 @@ bad.dispose()
 pinned.dispose()
 server.close()
 
-console.log('ssh: ok (handshake, exec, pty channel, TOFU pin, auth + host-key errors)')
+console.log(`ssh[${label}]: ok (handshake, exec, pty channel, TOFU pin, auth + host-key errors)`)
 process.exit(0)

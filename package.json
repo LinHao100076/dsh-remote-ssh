@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-ssh",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Remote SSH for DSH: browse remote files, open remote terminals, and mirror local agent edits to a remote server with per-mapping sync direction.",
   "keywords": [
     "dsh",
@@ -11,15 +11,16 @@
     "sftp"
   ],
   "type": "module",
-  "main": "src/index.js",
+  "main": "lib/server.mjs",
   "exports": {
-    ".": "./src/index.js",
+    ".": "./lib/server.mjs",
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "src",
+    "lib/server.mjs",
     "lib/client.js",
+    "src",
     "cordis.patch.yml",
     "README.md"
   ],
@@ -44,9 +45,9 @@
     "prepack": "node build.mjs",
     "pack:rel": "npm pack --pack-destination dist",
     "pretest": "node build.mjs",
-    "test": "node test/smoke.mjs && node test/ssh.mjs && node test/files.mjs && node test/forward.mjs && node test/render.mjs && node test/native.mjs",
+    "test": "node test/smoke.mjs && node test/ssh.mjs && node test/ssh.mjs --bundle && node test/files.mjs && node test/forward.mjs && node test/render.mjs && node test/native.mjs",
     "test:smoke": "node test/smoke.mjs",
-    "test:ssh": "node test/ssh.mjs",
+    "test:ssh": "node test/ssh.mjs && node test/ssh.mjs --bundle",
     "test:files": "node test/files.mjs",
     "test:forward": "node test/forward.mjs",
     "test:render": "node test/render.mjs",
@@ -66,16 +67,15 @@
       "optional": true
     }
   },
-  "dependencies": {
-    "chokidar": "^4.0.3",
-    "ssh2": "^1.17.0",
-    "ws": "^8.18.3"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
+    "chokidar": "^4.0.3",
     "esbuild": "^0.25.10",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "ssh2": "^1.17.0",
+    "ws": "^8.18.3"
   }
 }
