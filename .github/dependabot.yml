@@ -1,5 +1,15 @@
 version: 2
 
+# 只管 action 的版本更新。
+#
+# npm 那边**故意**没开常规版本更新：ssh2 / xterm / chokidar 都会被 build.mjs 打进
+# lib/，而 lib/ 是提交进版本库的（安装时不构建）。所以依赖一升，bundle 就变，
+# CI 的「lib/ 必须与源码同步」必然先红 —— 得由人跑 npm run build 再提交，
+# Dependabot 做不到这一步，开出来只是一堆红叉。
+#
+# 依赖的 CVE 仍然会管：仓库已开启 Dependabot alerts + security updates，
+# 真有漏洞时会自动提 PR，那时按同样流程重建 bundle 再合。
+
 updates:
   # action 的大版本会跟着 runner 的 Node 版本走（v4 跑在 Node 20 上已经被弃用警告了），
   # 与其等 GitHub 提示，不如让它自己提 PR。
@@ -12,18 +22,3 @@ updates:
     groups:
       actions:
         patterns: ["*"]
-
-  # ssh2 / xterm / chokidar 这些都会被 build.mjs 打进 lib/。
-  # 依赖一升级，bundle 就变了：CI 的「lib/ 必须与源码同步」会拦住，
-  # 本地跑一遍 npm run build 再提交即可，不是真失败。
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 4
-    commit-message:
-      prefix: "chore"
-    groups:
-      dev-dependencies:
-        dependency-type: development
-        update-types: ["minor", "patch"]
