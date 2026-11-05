@@ -148,43 +148,58 @@ assert.equal(result.payload.value.mappings[0].watching, true, 'watcher starts fo
 result = await callApi(apiRoute, 'forward.list')
 assert.deepEqual(result.payload.value, { hosts: [] }, 'no rules yet')
 
-result = await callApi(apiRoute, 'forward.save', { hostId, rule: { localPort: 0, remotePort: 80 } })
+result = await callApi(apiRoute, 'forward.save', { hostId, rule: { listen: { port: 0 }, target: { port: 80 } } })
 assert.equal(result.payload.error.code, 'bad-port', 'a rule needs a real port')
 
-result = await callApi(apiRoute, 'forward.save', { hostId: 'nope', rule: { localPort: 8080, remotePort: 80 } })
+result = await callApi(apiRoute, 'forward.save', { hostId: 'nope', rule: { listen: { port: 8080 }, target: { port: 80 } } })
 assert.equal(result.payload.error.code, 'host-missing')
 
 result = await callApi(apiRoute, 'forward.save', {
   hostId,
-  rule: { localPort: 18080, remotePort: 3000, note: 'dev server' },
+  rule: { listen: { port: 18080 }, target: { port: 3000 }, note: 'dev server' },
 })
 assert.equal(result.payload.ok, true, 'saving a rule succeeds')
 const savedRule = result.payload.value.rules[0]
-assert.equal(savedRule.bind, '127.0.0.1', 'rules bind loopback unless told otherwise')
+assert.equal(savedRule.kind, 'local', 'a rule is local forwarding unless told otherwise')
+assert.equal(savedRule.listen.host, '127.0.0.1', 'rules bind loopback unless told otherwise')
+assert.equal(savedRule.target.host, '127.0.0.1', 'the target host defaults to loopback')
 assert.equal(savedRule.autoStart, true)
 assert.equal(savedRule.state, 'stopped', 'saving does not start the listener')
 assert.equal(savedRule.exposed, false)
-assert.equal(savedRule.remoteHost, '127.0.0.1', 'the target host defaults to loopback')
+assert.equal(savedRule.link, '127.0.0.1:18080')
 
+// A wildcard bind covers the loopback one: the OS will not hand out both, so the
+// check must refuse it here instead of leaving it to fail at listen time.
 result = await callApi(apiRoute, 'forward.save', {
   hostId,
-  rule: { localPort: 18080, remotePort: 5432, bind: '0.0.0.0' },
+  rule: { listen: { host: '0.0.0.0', port: 18080 }, target: { port: 5432 } },
 })
-assert.equal(result.payload.ok, true, 'a public bind is allowed separately from the loopback one')
+assert.equal(result.payload.error.code, 'duplicate-port', '0.0.0.0 covers 127.0.0.1 on the same port')
 
 result = await callApi(apiRoute, 'forward.save', {
   hostId,
-  rule: { localPort: 18080, remotePort: 6379 },
+  rule: { listen: { port: 18080 }, target: { port: 6379 } },
 })
 assert.equal(result.payload.error.code, 'duplicate-port', 'the same local port cannot be claimed twice')
-assert.match(result.payload.error.message, /已被另一条规则/)
+
+// A `-R` rule listens on the *server*, so it may reuse a port a `-L` rule holds here.
+result = await callApi(apiRoute, 'forward.save', {
+  hostId,
+  rule: { kind: 'remote', listen: { port: 18080 }, target: { port: 3000 } },
+})
+assert.equal(result.payload.ok, true, 'a reverse rule may reuse a local port: it binds on the server')
+
+// A dynamic rule has no target at all — the SOCKS client names it per connection.
+result = await callApi(apiRoute, 'forward.save', { hostId, rule: { kind: 'dynamic', listen: { port: 1080 } } })
+assert.equal(result.payload.ok, true, 'a SOCKS5 rule needs only a listening port')
+assert.equal(result.payload.value.rules.at(-1).to, 'SOCKS5')
 
 result = await callApi(apiRoute, 'forward.list', { hostId })
-assert.equal(result.payload.value.hosts[0].rules.length, 2)
+assert.equal(result.payload.value.hosts[0].rules.length, 3)
 assert.equal(result.payload.value.hosts[0].hostName, '10.0.3.21')
 
 result = await callApi(apiRoute, 'forward.remove', { hostId, ruleId: savedRule.id })
-assert.equal(result.payload.value.rules.length, 1)
+assert.equal(result.payload.value.rules.length, 2)
 
 /* ── error + method routing ───────────────────────────────────────────── */
 
@@ -204,7 +219,12 @@ const state = JSON.parse(await readFile(storePath, 'utf8'))
 assert.equal(state.hosts.length, 1)
 assert.equal(state.hosts[0].auth.password, undefined, 'no password on disk')
 assert.equal(state.mappings.s1.length, 1)
-assert.equal(state.forwards[hostId].length, 1, 'forward rules survive a reload')
+assert.equal(state.forwards[hostId].length, 2, 'forward rules survive a reload')
+assert.deepEqual(
+  state.forwards[hostId].map((rule) => rule.kind).sort(),
+  ['dynamic', 'remote'],
+  'the round-trip through disk keeps each rule shape',
+)
 
 /* ── pure helpers ─────────────────────────────────────────────────────── */
 

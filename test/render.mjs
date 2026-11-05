@@ -136,6 +136,7 @@ assert.match(sync, /建立映射后/, 'sync pane explains the contract before an
 const forward = render('forward')
 assert.match(forward, /还没有转发规则/, 'forward pane empty state')
 assert.match(forward, /远端地址|127\.0\.0\.1/, 'forward pane hints at the target address semantics')
+assert.match(forward, /本地 -L|动态 -D|反向 -R/, 'forward pane offers all three tunnel shapes')
 
 const settings = render('settings', { host: passwordHost, hostId: passwordHost.id, hosts: [passwordHost] })
 assert.match(settings, /type="password"/, 'settings offers a password field for a password host (#2)')

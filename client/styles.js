@@ -182,6 +182,9 @@ export const CSS = `
 .rs-select { font-family: inherit; }
 .rs-input:focus, .rs-select:focus { border-color: var(--rs-accent); box-shadow: 0 0 0 3px var(--rs-accent-soft); }
 .rs-grid2 { display: grid; grid-template-columns: 1fr 84px; gap: 8px; }
+/* Both cells carry the same kind of control (a port and an address), so they get
+   equal room; the 84px column above is for a wide field beside a short one. */
+.rs-grid2.even { grid-template-columns: 1fr 1fr; }
 .rs-grid2.wide { grid-template-columns: 1fr 118px; }
 .rs-rowacts { display: flex; gap: 6px; flex-wrap: wrap; }
 .rs-rowacts .rs-btn { flex: none; }
@@ -359,6 +362,11 @@ export const CSS = `
 .rs-frow:last-child { border-bottom: 0; }
 .rs-frow-l { display: flex; align-items: center; gap: 5px; min-width: 0; font-family: var(--rs-mono); font-size: 11px; }
 .rs-frow-l .rs-path { flex: 0 1 auto; }
+.rs-kind {
+  flex: none; width: 15px; height: 15px; border-radius: 4px; display: grid; place-items: center;
+  font-size: 9.5px; font-weight: 700; line-height: 1; color: var(--rs-fg3); background: var(--rs-layer2);
+  font-family: var(--rs-mono, monospace);
+}
 .rs-frow-r { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .rs-frow-r .rs-grow { flex: 1; }
 .rs-stat { display: flex; gap: 14px; padding: 9px 12px; font-size: 10.5px; color: var(--rs-fg3); font-family: var(--rs-mono); border-top: 1px solid var(--rs-line); }

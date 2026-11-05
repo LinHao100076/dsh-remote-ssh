@@ -1,26 +1,39 @@
 /**
- * Local port forwarding — the host side of `ssh -L`.
+ * Port forwarding — the three shapes OpenSSH offers, in one rule list.
  *
- * A rule is `本地端口 → 远端 host:port`. This module owns the listening
- * `net.Server`s; the SSH side is a `direct-tcpip` channel borrowed from the
- * pool, so every tunnel rides the host's single authenticated connection.
+ * | kind      | 监听 | 目标             | OpenSSH |
+ * | --------- | ---- | ---------------- | ------- |
+ * | `local`   | 本机 | 远端 host:port   | `-L`    |
+ * | `dynamic` | 本机 | 每连接再定       | `-D`    |
+ * | `remote`  | 远端 | 本机 host:port   | `-R`    |
  *
- * Two decisions worth stating:
+ * The SSH side is always a channel borrowed from the pool, so every tunnel rides
+ * the host's single authenticated connection. What differs is who listens:
+ * `-L`/`-D` own a `net.Server` here, `-R` asks the *server* to listen and
+ * receives inbound channels through `pool.requestRemoteForward`.
  *
- * - **Least exposure by default.** A rule binds `127.0.0.1`; binding a public
+ * Three decisions worth stating:
+ *
+ * - **Least exposure by default.** A rule binds loopback; binding a public
  *   interface is possible but reported back as `exposed` so the panel can warn.
  *   Forwarding a database port onto `0.0.0.0` is how laptops end up on scan lists.
  * - **Listeners outlive the connection.** The pool reconnects lazily on the next
- *   channel request, so a listener is not torn down when SSH drops; only an
- *   explicit stop, disconnect or host change does that.
+ *   channel request, so a local listener is not torn down when SSH drops; only an
+ *   explicit stop, disconnect or host change does that. A *remote* listener is
+ *   the exception the pool handles: the port is on the server, so it is
+ *   re-requested on reconnect instead of being claimed to still exist.
+ * - **A failed dial is not a failed rule — for `-D`.** A `-L`/`-R` rule has one
+ *   target the user configured, so its failure is about *their* rule and belongs
+ *   in the panel. A SOCKS proxy fans out to whatever each client asks for, so one
+ *   unreachable target says nothing about the proxy; the refusal goes back as a
+ *   SOCKS reply code and the rule stays healthy.
  * @module dsh-remote-ssh/forward/manager
  */
-import { createServer } from 'node:net'
+import { createServer, connect as netConnect } from 'node:net'
 import { RemoteError } from '../ssh/pool.js'
 import { nextId } from '../util.js'
-
-/** Addresses that keep the tunnel on this machine. */
-const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost'])
+import { KIND, LOOPBACK, describeRule, listenSide, normalizeRule, sameSocketSpace } from './rule.js'
+import { REPLY, readSocksRequest, replyBuffer, replyForError } from './socks5.js'
 
 /** Trimmed string or empty. */
 function text(value) {
@@ -41,29 +54,39 @@ function messageOf(error) {
   return error instanceof Error ? error.message : String(error)
 }
 
+/** Port label for each side of each kind — the error must name the right end. */
+function portLabel(kind, side) {
+  if (side === 'listen') {
+    if (kind === KIND.dynamic) return 'SOCKS5 端口'
+    return kind === KIND.remote ? '远端端口（服务器上监听）' : '本地端口'
+  }
+  return kind === KIND.remote ? '本机端口（转发目标）' : '远端端口'
+}
+
 /**
  * Map a `net.Server.listen` failure to a code the UI can branch on.
  *
  * `EADDRINUSE` is by far the most common — usually the user's own dev server on
- * the same port — and it must say so, because the fix (pick another local port)
- * is not obvious from a raw listen error.
+ * the same port — and it must say so, because the fix (pick another port) is not
+ * obvious from a raw listen error.
  */
 function listenError(error, rule) {
+  const where = `${rule.listen.host}:${rule.listen.port}`
   if (error?.code === 'EADDRINUSE') {
-    return new RemoteError('port-in-use', `本地端口 ${rule.localPort} 已被占用，换一个本地端口再试`, 409)
+    return new RemoteError('port-in-use', `端口 ${where} 已被占用，换一个端口再试`, 409)
   }
   if (error?.code === 'EACCES') {
-    return new RemoteError('port-denied', `没有权限监听端口 ${rule.localPort}（1024 以下需要管理员）`, 403)
+    return new RemoteError('port-denied', `没有权限监听端口 ${rule.listen.port}（1024 以下需要管理员）`, 403)
   }
   if (error?.code === 'EADDRNOTAVAIL' || error?.code === 'ENOTFOUND') {
-    return new RemoteError('bad-bind', `无法绑定到 ${rule.bind}：本机没有这个地址`, 400)
+    return new RemoteError('bad-bind', `无法绑定到 ${rule.listen.host}：本机没有这个地址`, 400)
   }
-  return new RemoteError('listen-failed', `监听 ${rule.bind}:${rule.localPort} 失败：${messageOf(error)}`, 500)
+  return new RemoteError('listen-failed', `监听 ${where} 失败：${messageOf(error)}`, 500)
 }
 
 export class ForwardManager {
   /**
-   * Live listeners, keyed by rule id.
+   * Live listeners (or remote registrations), keyed by rule id.
    * @type {Map<string, object>}
    */
   #live = new Map()
@@ -96,20 +119,47 @@ export class ForwardManager {
   #rule(hostId, ruleId) {
     const rule = this.store.forwards(hostId).find((item) => item.id === ruleId)
     if (rule === undefined) throw new RemoteError('rule-missing', '转发规则不存在', 404)
-    return rule
+    return normalizeRule(rule)
   }
 
   /** Wire shape: stored fields plus live tunnel state. */
-  #describe(rule) {
+  #describe(rule, hostId) {
     const live = this.#live.get(rule.id)
     const failure = this.#failed.get(rule.id)
+    const listenText = `${rule.listen.host}:${rule.listen.port}`
+    const targetText = rule.kind === KIND.dynamic ? 'SOCKS5' : `${rule.target.host}:${rule.target.port}`
+
+    let state = live?.state ?? (failure === undefined ? 'stopped' : 'error')
+    let error = live?.error ?? failure
+
+    // A remote listener lives on the server and dies with the connection. The
+    // rule still reads `listening` locally, so the pool's registration is the
+    // only witness that the port actually exists right now.
+    if (rule.kind === KIND.remote && live !== undefined) {
+      const remote = this.pool.remoteForwardState(hostId, rule.listen.host, rule.listen.port)
+      if (remote?.error !== undefined) {
+        state = 'error'
+        error = remote.error
+      } else if (remote === undefined || remote.held === false) {
+        state = 'error'
+        error = 'SSH 连接已断开，服务器上的端口暂时不存在（重连后自动恢复）'
+      }
+    }
+
     return {
       ...rule,
-      state: live?.state ?? (failure === undefined ? 'stopped' : 'error'),
-      error: live?.error ?? failure,
-      local: `${rule.bind}:${rule.localPort}`,
-      target: `${rule.remoteHost}:${rule.remotePort}`,
-      exposed: !LOOPBACK.has(rule.bind),
+      state,
+      error,
+      kindLabel: rule.kind,
+      // `link` / `to` are the two ends rendered for display. The structured
+      // `listen` / `target` objects pass through untouched: a single name cannot
+      // be both the address and the string to show, and shadowing the object here
+      // is exactly the bug this comment is standing in front of.
+      link: listenText,
+      to: targetText,
+      listenSide: listenSide(rule.kind),
+      granted: live?.granted,
+      exposed: !LOOPBACK.has(rule.listen.host) && rule.listen.host !== '',
       connections: live?.connections.size ?? 0,
       bytes: live?.bytes ?? 0,
       since: live?.since,
@@ -123,7 +173,7 @@ export class ForwardManager {
       hostId,
       hostName: host?.name ?? '(主机已删除)',
       status: this.pool.status(hostId),
-      rules: this.store.forwards(hostId).map((rule) => this.#describe(rule)),
+      rules: this.store.forwards(hostId).map((rule) => this.#describe(normalizeRule(rule), hostId)),
     }
   }
 
@@ -143,36 +193,36 @@ export class ForwardManager {
    * effect at once; a restart failure is recorded on the rule rather than thrown,
    * because the save itself succeeded and the panel needs to show both facts.
    * @param {string} hostId - owning host.
-   * @param {object} input - `{id?, localPort, remoteHost?, remotePort, bind?, autoStart?, note?}`.
+   * @param {object} input - `{id?, kind?, listen?, target?, autoStart?, note?}`; the
+   *   0.5.x shape `{localPort, remoteHost, remotePort, bind}` is still accepted.
    * @returns {Promise<object>} the host view.
    */
   async save(hostId, input = {}) {
     this.#host(hostId)
-    const localPort = portValue(input.localPort, '本地端口')
-    const remotePort = portValue(input.remotePort, '远端端口')
-    const remoteHost = text(input.remoteHost) || '127.0.0.1'
-    const bind = text(input.bind) || '127.0.0.1'
     const id = text(input.id) || nextId('fwd')
-
-    // Two rules on the same local socket can never both listen; catching it here
-    // names the conflicting rule instead of failing later with EADDRINUSE.
-    const clash = this.store.allForwards().find((rule) => (
-      rule.id !== id && rule.bind === bind && rule.localPort === localPort
-    ))
-    if (clash !== undefined) {
-      throw new RemoteError('duplicate-port', `本地端口 ${localPort} 已被另一条规则（${clash.remoteHost}:${clash.remotePort}）占用`, 409)
+    const previous = this.store.forwards(hostId).find((rule) => rule.id === id)
+    const rule = normalizeRule({ ...input, id, createdAt: previous?.createdAt })
+    rule.listen.port = portValue(rule.listen.port, portLabel(rule.kind, 'listen'))
+    if (rule.kind !== KIND.dynamic) {
+      rule.target.port = portValue(rule.target.port, portLabel(rule.kind, 'target'))
+      if (rule.target.host === '') {
+        throw new RemoteError('bad-target', rule.kind === KIND.remote ? '请填写本机目标地址' : '请填写远端目标地址', 400)
+      }
     }
 
-    const previous = this.store.forwards(hostId).find((rule) => rule.id === id)
-    const rule = {
-      id,
-      localPort,
-      remoteHost,
-      remotePort,
-      bind,
-      autoStart: input.autoStart !== false,
-      note: text(input.note) || undefined,
-      createdAt: previous?.createdAt ?? Date.now(),
+    // Two rules on the same socket can never both listen; catching it here names
+    // the conflicting rule instead of failing later with EADDRINUSE. Rules that
+    // listen on different machines (a `-L` here, a `-R` there) never clash.
+    const clash = this.store.allForwards().find((other) => (
+      other.id !== id && sameSocketSpace(normalizeRule(other), rule, other.hostId, hostId)
+    ))
+    if (clash !== undefined) {
+      const where = listenSide(rule.kind) === 'remote' ? '服务器上' : '本机'
+      throw new RemoteError(
+        'duplicate-port',
+        `${where}端口 ${rule.listen.port} 已被另一条规则（${describeRule(normalizeRule(clash))}）占用`,
+        409,
+      )
     }
 
     await this.store.setForwards(hostId, [...this.store.forwards(hostId).filter((item) => item.id !== id), rule])
@@ -194,39 +244,77 @@ export class ForwardManager {
     const host = this.#host(hostId)
     const rule = this.#rule(hostId, ruleId)
     if (this.#live.get(ruleId)?.state === 'listening') return this.#hostView(hostId)
+    if (rule.kind === KIND.remote) return this.#startRemote(host, rule, hostId)
+    return this.#startLocal(host, rule, hostId)
+  }
 
+  /** `-L` and `-D`: a listener on this machine. */
+  async #startLocal(host, rule, hostId) {
+    const server = createServer()
     const record = {
       hostId,
       rule,
-      server: createServer(),
+      server,
       state: 'starting',
       connections: new Set(),
       bytes: 0,
       since: Date.now(),
     }
-    this.#live.set(ruleId, record)
-    record.server.on('connection', (socket) => { void this.#bridge(host, rule, record, socket) })
+    this.#live.set(rule.id, record)
+    server.on('connection', (socket) => {
+      if (rule.kind === KIND.dynamic) void this.#serveSocks(host, record, socket)
+      else void this.#bridge(host, record, socket)
+    })
 
     try {
       await new Promise((resolve, reject) => {
         const failed = (error) => reject(listenError(error, rule))
-        record.server.once('error', failed)
-        record.server.listen({ port: rule.localPort, host: rule.bind, exclusive: true }, () => {
-          record.server.removeListener('error', failed)
+        server.once('error', failed)
+        server.listen({ port: rule.listen.port, host: rule.listen.host, exclusive: true }, () => {
+          server.removeListener('error', failed)
           resolve()
         })
       })
     } catch (error) {
-      this.#live.delete(ruleId)
-      this.#failed.set(ruleId, messageOf(error))
+      this.#live.delete(rule.id)
+      this.#failed.set(rule.id, messageOf(error))
       throw error
     }
 
     // After listen succeeds, later errors are recorded rather than thrown: a
     // socket-level failure must not take the whole plugin down.
-    record.server.on('error', (error) => { record.error = messageOf(error) })
+    server.on('error', (error) => { record.error = messageOf(error) })
     record.state = 'listening'
-    this.#failed.delete(ruleId)
+    this.#failed.delete(rule.id)
+    return this.#hostView(hostId)
+  }
+
+  /** `-R`: the *server* listens, and inbound channels arrive through the pool. */
+  async #startRemote(host, rule, hostId) {
+    const record = {
+      hostId,
+      rule,
+      server: undefined,
+      state: 'starting',
+      connections: new Set(),
+      bytes: 0,
+      since: Date.now(),
+    }
+    this.#live.set(rule.id, record)
+    try {
+      record.granted = await this.pool.requestRemoteForward(
+        host,
+        rule.listen.host,
+        rule.listen.port,
+        (stream) => { this.#acceptRemote(record, stream) },
+      )
+    } catch (error) {
+      this.#live.delete(rule.id)
+      this.#failed.set(rule.id, messageOf(error))
+      throw error
+    }
+    record.state = 'listening'
+    this.#failed.delete(rule.id)
     return this.#hostView(hostId)
   }
 
@@ -234,12 +322,19 @@ export class ForwardManager {
   async stop(hostId, ruleId) {
     this.#failed.delete(ruleId)
     const live = this.#live.get(ruleId)
-    if (live !== undefined) {
-      this.#live.delete(ruleId)
-      for (const socket of live.connections) socket.destroy()
-      live.connections.clear()
+    if (live === undefined) return this.#hostView(hostId)
+    this.#live.delete(ruleId)
+    for (const socket of live.connections) socket.destroy()
+    live.connections.clear()
+    if (live.server !== undefined) {
       live.server.closeAllConnections?.()
       await new Promise((resolve) => live.server.close(() => resolve()))
+    }
+    if (live.rule.kind === KIND.remote) {
+      const host = this.store.host(hostId)
+      if (host !== undefined) {
+        await this.pool.releaseRemoteForward(host, live.rule.listen.host, live.rule.listen.port).catch(() => {})
+      }
     }
     return this.#hostView(hostId)
   }
@@ -286,43 +381,106 @@ export class ForwardManager {
     for (const [ruleId, live] of [...this.#live]) {
       this.#live.delete(ruleId)
       for (const socket of live.connections) socket.destroy()
-      live.server.closeAllConnections?.()
-      await new Promise((resolve) => live.server.close(() => resolve())).catch(() => {})
+      live.connections.clear()
+      if (live.server !== undefined) {
+        live.server.closeAllConnections?.()
+        await new Promise((resolve) => live.server.close(() => resolve())).catch(() => {})
+      }
     }
     this.#failed.clear()
   }
 
   /**
-   * Serve one inbound socket: open the SSH channel, then pipe both ways.
+   * Serve one `-L` inbound socket: open the SSH channel, then pipe both ways.
    *
    * Bytes are counted in both directions for the panel's traffic readout, and a
-   * failed channel closes the socket immediately — a tunnel that cannot reach
-   * its target must look like a refused connection, not hang.
+   * failed channel closes the socket immediately — a tunnel that cannot reach its
+   * target must look like a refused connection, not hang.
    */
-  async #bridge(host, rule, record, socket) {
-    record.connections.add(socket)
-    socket.on('close', () => record.connections.delete(socket))
+  async #bridge(host, record, socket) {
     socket.on('error', () => {})
-
     let channel
     try {
-      channel = await this.pool.forward(host, rule.remoteHost, rule.remotePort)
+      channel = await this.pool.forward(host, record.rule.target.host, record.rule.target.port)
     } catch (error) {
       record.error = messageOf(error)
-      this.#failed.set(rule.id, record.error)
+      this.#failed.set(record.rule.id, record.error)
+      socket.destroy()
+      return
+    }
+    record.error = undefined
+    this.#failed.delete(record.rule.id)
+    this.#wire(record, socket, channel)
+  }
+
+  /**
+   * Serve one `-D` inbound socket: SOCKS5 handshake, then dial whatever it asked
+   * for.
+   *
+   * The reply is written only after the channel is open, so the client gets the
+   * real outcome. Neither a malformed handshake nor a refused target is recorded
+   * on the rule: a port scanner is not a broken tunnel, and one dead target says
+   * nothing about a proxy that serves every target the client names.
+   */
+  async #serveSocks(host, record, socket) {
+    socket.on('error', () => {})
+    record.connections.add(socket)
+    socket.on('close', () => record.connections.delete(socket))
+
+    let request
+    try {
+      request = await readSocksRequest(socket)
+    } catch {
       socket.destroy()
       return
     }
 
-    record.error = undefined
-    this.#failed.delete(rule.id)
-    socket.on('data', (chunk) => { record.bytes += chunk.length })
-    channel.on('data', (chunk) => { record.bytes += chunk.length })
-    channel.on('error', (error) => { record.error = messageOf(error) })
-    channel.on('close', () => socket.destroy())
-    socket.on('close', () => { try { channel.close() } catch { /* already gone */ } })
+    let channel
+    try {
+      channel = await this.pool.forward(host, request.host, request.port)
+    } catch (error) {
+      socket.end(replyBuffer(replyForError(error)))
+      return
+    }
 
-    socket.pipe(channel)
-    channel.pipe(socket)
+    socket.write(replyBuffer(REPLY.ok))
+    // The client may have pipelined its first payload behind the request; those
+    // bytes were consumed by the handshake parser and have to be replayed.
+    if (request.rest.length > 0) channel.write(request.rest)
+    this.#wire(record, socket, channel)
+  }
+
+  /**
+   * Accept one `-R` inbound channel: dial the local target and pipe.
+   *
+   * A refused local target closes the channel, which is how the remote peer
+   * learns the service is down — the same shape a refused `-L` has.
+   */
+  #acceptRemote(record, stream) {
+    stream.on('error', () => {})
+    const socket = netConnect({ host: record.rule.target.host, port: record.rule.target.port })
+    socket.on('error', (error) => {
+      record.error = messageOf(error)
+      this.#failed.set(record.rule.id, record.error)
+      try { stream.close() } catch { /* already gone */ }
+    })
+    socket.on('connect', () => {
+      record.error = undefined
+      this.#failed.delete(record.rule.id)
+      this.#wire(record, socket, stream)
+    })
+  }
+
+  /** Pipe a socket and its SSH channel together, counting bytes both ways. */
+  #wire(record, socket, stream) {
+    record.connections.add(socket)
+    socket.on('close', () => record.connections.delete(socket))
+    socket.on('data', (chunk) => { record.bytes += chunk.length })
+    stream.on('data', (chunk) => { record.bytes += chunk.length })
+    stream.on('error', (error) => { record.error = messageOf(error) })
+    stream.on('close', () => socket.destroy())
+    socket.on('close', () => { try { stream.close() } catch { /* already gone */ } })
+    socket.pipe(stream)
+    stream.pipe(socket)
   }
 }

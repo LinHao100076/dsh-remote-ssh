@@ -12,8 +12,28 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { expandHome } from './ssh/paths.js'
+import { normalizeRule } from './forward/rule.js'
 
 const EMPTY = { version: 1, hosts: [], mappings: {}, baselines: {}, forwards: {} }
+
+/**
+ * Bring stored rules up to the current shape.
+ *
+ * 0.5.x and earlier wrote `{localPort, remoteHost, remotePort, bind}` with no
+ * `kind`; every one of those was a `-L` rule, which is exactly what
+ * `normalizeRule` assumes when `kind` is absent. Rewriting on load (rather than
+ * at every read) means the file converges to one shape on the next save instead
+ * of carrying a translation layer forever.
+ */
+function migrateForwards(forwards) {
+  const result = {}
+  for (const [hostId, rules] of Object.entries(forwards)) {
+    if (!Array.isArray(rules)) continue
+    const migrated = rules.map((rule) => normalizeRule(rule))
+    if (migrated.length > 0) result[hostId] = migrated
+  }
+  return result
+}
 
 export class Store {
   #state = structuredClone(EMPTY)
@@ -36,7 +56,7 @@ export class Store {
         hosts: Array.isArray(parsed.hosts) ? parsed.hosts : [],
         mappings: parsed.mappings ?? {},
         baselines: parsed.baselines ?? {},
-        forwards: parsed.forwards ?? {},
+        forwards: migrateForwards(parsed.forwards ?? {}),
       }
     } catch {
       this.#state = structuredClone(EMPTY)

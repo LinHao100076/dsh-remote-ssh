@@ -202,7 +202,7 @@ assert.equal(tunnelConnected.status, 200, `hosts.connect: ${JSON.stringify(tunne
 
 const savedRule = await api('forward.save', {
   hostId: tunnelHostId,
-  rule: { localPort, remoteHost: '127.0.0.1', remotePort: echoPort },
+  rule: { listen: { port: localPort }, target: { host: '127.0.0.1', port: echoPort } },
 })
 assert.equal(savedRule.status, 200, `forward.save: ${JSON.stringify(savedRule.body)}`)
 const ruleId = savedRule.body.value.rules[0].id

@@ -7,6 +7,11 @@
  * on someone's server. SFTP is read-only and maps `/x/y` to `<root>/x/y`, which
  * is all the browser and the search-result jump need.
  *
+ * Forwarding is real too: `direct-tcpip` connects out from here (so `-L` and `-D`
+ * land wherever the target really is), and `tcpip-forward` opens a listener on
+ * this side (so `-R` sends traffic back to the client). Point a rule at a local
+ * echo service and all three shapes can be tried without a server.
+ *
  * Usage:
  *   node scripts/dev-remote.mjs [root] [port]
  *   node scripts/dev-remote.mjs ./tmp-project 2202
@@ -16,6 +21,7 @@
 import { spawn } from 'node:child_process'
 import { generateKeyPairSync } from 'node:crypto'
 import fs from 'node:fs'
+import { connect as netConnect, createServer as createNetServer } from 'node:net'
 import path from 'node:path'
 import ssh2 from 'ssh2'
 
@@ -266,6 +272,79 @@ const server = new Server({ hostKeys: [privateKey] }, (client) => {
     else auth.reject(['password', 'keyboard-interactive'])
   })
   client.on('ready', () => {
+    /**
+     * Listeners opened on behalf of `ssh -R`, keyed by requested port.
+     *
+     * They are closed when the connection goes away, exactly like a real sshd
+     * drops its forwarded listeners: leaving them would make the second
+     * `tcpip-forward` for a port fail as in-use, and the client's reconnect would
+     * look broken when it is the server side that leaked.
+     */
+    const reverseServers = new Map()
+
+    // `-L` and `-D` land here. sshd connects before confirming the channel, so a
+    // refused target fails the open — copying that is what lets a SOCKS client
+    // see "connection refused" instead of success-then-EOF.
+    client.on('tcpip', (accept, reject, info) => {
+      const upstream = netConnect({ host: info.destIP, port: info.destPort })
+      upstream.once('connect', () => {
+        const stream = accept()
+        stream.on('error', () => {})
+        stream.pipe(upstream).pipe(stream)
+      })
+      upstream.once('error', () => {
+        upstream.destroy()
+        reject()
+      })
+    })
+
+    client.on('request', (accept, reject, name, info) => {
+      if (name === 'tcpip-forward') {
+        const listener = createNetServer((socket) => {
+          socket.on('error', () => {})
+          // Argument order is (boundAddr, boundPort, peerAddr, peerPort). The
+          // bound pair is what the client matches against its own bookkeeping,
+          // so swapping them makes every forwarded channel get rejected.
+          client.forwardOut(info.bindAddr, info.bindPort, socket.remoteAddress ?? '127.0.0.1', socket.remotePort ?? 0, (error, stream) => {
+            if (error) {
+              socket.destroy()
+              return
+            }
+            stream.on('error', () => {})
+            socket.pipe(stream).pipe(socket)
+          })
+        })
+        listener.once('error', () => { reject?.(); return })
+        listener.listen(info.bindPort, info.bindAddr, () => {
+          const { port } = listener.address()
+          reverseServers.set(info.bindPort, listener)
+          console.log(`dev-remote: reverse listener ${info.bindAddr}:${port} → this client`)
+          // Port 0 means "pick one for me"; the granted port travels back in the
+          // reply, which is the only way the client can learn it.
+          if (info.bindPort === 0) accept?.(port)
+          else accept?.()
+        })
+        return
+      }
+      if (name === 'cancel-tcpip-forward') {
+        const listener = reverseServers.get(info.bindPort)
+        if (listener === undefined) {
+          reject?.()
+          return
+        }
+        reverseServers.delete(info.bindPort)
+        listener.close()
+        accept?.()
+        return
+      }
+      reject?.()
+    })
+
+    client.on('close', () => {
+      for (const listener of reverseServers.values()) listener.close()
+      reverseServers.clear()
+    })
+
     client.on('session', (accept) => {
       const session = accept()
       session.on('pty', (acceptPty) => acceptPty?.())
