@@ -71,7 +71,7 @@ scripts/           对着真实服务器跑的验收脚本；`dev-remote.mjs` �
 
 ```bash
 npm run pack:rel     # 生成 dist/dsh-remote-ssh-<版本>.tgz
-dsh plugin --profile <profile> add -w "C:/绝对路径/dsh-remote-ssh-<版本>.tgz"
+dsh plugin --profile <profile> add -w "/path/to/plugin.tgz"
 ```
 
 `-w` 不能省：profile 里有 `pnpm-workspace.yaml`，pnpm 认为根是 workspace root，不带 `-w` 会报 `ERR_PNPM_ADDING_TO_ROOT`。
