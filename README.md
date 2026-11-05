@@ -24,8 +24,8 @@ lib/client.js      构建产物：客户端 bundle（esbuild 打包，由宿主�
 lib/server.mjs     构建产物：宿主端 bundle（ssh2 / ws / chokidar 全打进来，包里零运行期依赖）
 docs/design.md     架构取舍、平台发现、问题清单、里程碑
 ui/prototype.html  UI 原型（单文件，浏览器直接打开，可切深色）——界面以它为准
-test/              十组测试（见下）
-scripts/           对着真实服务器跑的验收脚本
+test/              十一组测试（见下）
+scripts/           对着真实服务器跑的验收脚本；`dev-remote.mjs` 是本地假远端（exec 走真 shell，SFTP 只读）
 ```
 
 ## 先看原型
@@ -88,6 +88,23 @@ dsh --profile <name> --no-open --port 4987
 
 两个分支都有测试覆盖（`test/e2e-profile.mjs`），包括 tmux 存在时实际下发的 argv 是 `tmux new -A -s dsh-xxx`。
 
+## 远端搜索
+
+文件视图工具条上的放大镜：在**远端**跑 `rg`（没有则 `grep -r`），只把命中的行拿回来 —— 不下载文件、不建本地索引，所以能搜的永远比映射里的多。
+
+- **默认字面量 + smart-case**：输入 `foo` 忽略大小写，输入 `Foo` 就区分大小写；`Aa` 强制区分，`.*` 才按正则解释。
+- **结果按文件分组**，点任意一条打开文件并滚到那一行；超长行围绕命中位置裁剪，不会出现「预览里看不出为什么命中」。
+- **范围是当前目录**：`rg` 尊重 `.gitignore`；没有 `rg` 时 `grep` 显式跳过 `.git`、`node_modules`、`.venv`、`__pycache__`、`target`、`dist`、`build`、`.next`、`.cache`、`.idea`。
+- **上限 200 条**并明确标出截断；切断发生在远端（`head -n`），一个巨型仓库不会把数据灌进宿主进程。
+- **输出通道**：`rg --json` / `grep -rInZ`（文件名后跟 NUL）。`path:line:text` 那种格式一遇到带冒号的路径或正文就解析错，而错的结果比没有结果更糟。老版本 `rg` 不认 `--json` 时自动降级到 `grep` 并记住。
+
+想试搜索、文件树、终端但手上没有服务器，用仓库里的假远端（`exec` 走本机 `sh`，命令拼错、引号写错当场暴露；SFTP 只读，删不掉真文件）：
+
+```bash
+node scripts/dev-remote.mjs /path/to/project 2202
+# 面板里新建主机 127.0.0.1:2202，用户和密码随便填
+```
+
 ## 端口转发（ssh -L）
 
 远端只监听 `127.0.0.1` 的服务 —— Redis、Postgres、前端 dev server —— 用「转发」标签页映射到本机：本地端口 `6379` → 远端 `127.0.0.1:6379`，然后本地照常连 `localhost:6379`。等价于：
@@ -130,7 +147,7 @@ ssh -L 6379:127.0.0.1:6379 me@server
 ## 验证
 
 ```bash
-npm test             # 先自动 build（两个 bundle），再跑十轮 Node 测试
+npm test             # 先自动 build（两个 bundle），再跑十一轮 Node 测试
 ```
 
 `npm test` 有 `pretest` 钩子，会先重建两个 bundle —— 否则渲染测试可能跑在旧产物上，改了代码却仍报绿。
@@ -145,6 +162,7 @@ npm test             # 先自动 build（两个 bundle），再跑十轮 Node �
 | `test/native.mjs` | 两个入口的取舍：有 better-sidebar 时**一个**标签页、没有时原生类型/面板/头部按钮、后激活时的交接、卸载后无残留 |
 | `test/api.mjs` | 草稿主机的 id 按目标稳定（重复点「测试连接」复用一条连接、不占用当前主机的槽位），编辑已有主机时沿用已钉的指纹（issue #5 回归） |
 | `test/styles.mjs` | 样式表注入：落到承载面板的那个 document、重复调用幂等、上一版残留的旧表就地刷新（issue #3 回归）、没有 head 不抛 |
+| `test/search.mjs` | 远端内容搜索：`rg --json` 与 `grep -rInZ` 两条输出通道（含路径/正文带冒号）、大小写三档、命中两侧裁剪、`head` 截断、老版 rg 降级到 grep、真 shell 下的引号与排除目录（`rg` 缺失时用 `grep -E` 跑正则） |
 | `test/ws.mjs` | 用**构建产物里的** `WebSocketServer` 加真客户端对打，跨 ws 的 48/32/24 三个阈值与拆帧（issue #4 回归：空对象打桩曾让 `bufferUtil.unmask` 变成未捕获异常，一点终端就崩宿主） |
 
 浏览器产物检查（在真实 Chrome 里加载 bundle，验证标签页注册、order 46、重复挂载幂等、卸载后清空）：

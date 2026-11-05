@@ -55,12 +55,13 @@ export function Icon({ name, size = 14, className = '' }) {
 }
 
 /** Square icon-only button. */
-export function IconButton({ name, title, onClick, disabled, size = 14 }) {
+export function IconButton({ name, title, onClick, disabled, size = 14, active = false }) {
   return h('button', {
     type: 'button',
-    className: 'rs-icon',
+    className: active === true ? 'rs-icon on' : 'rs-icon',
     title,
     'aria-label': title,
+    'aria-pressed': active === true ? 'true' : undefined,
     onClick,
     disabled,
   }, h(Icon, { name, size }))

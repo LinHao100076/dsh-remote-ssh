@@ -17,6 +17,7 @@ import { WebSocketServer } from 'ws'
 import { Store } from './store.js'
 import { SshPool } from './ssh/pool.js'
 import { RemoteFiles } from './remote/files.js'
+import { RemoteSearch } from './remote/search.js'
 import { Transfer } from './remote/transfer.js'
 import { SyncEngine } from './sync/engine.js'
 import { ForwardManager } from './forward/manager.js'
@@ -40,7 +41,7 @@ export { SshPool, WebSocketServer }
 /** Routes, sessions and remote terminals need these services before mounting. */
 export const inject = ['webServer', 'sessions']
 
-const VERSION = '0.3.4'
+const VERSION = '0.4.0'
 
 /**
  * Mount the plugin.
@@ -64,8 +65,9 @@ export async function apply(ctx, config = {}) {
   const transfer = new Transfer(pool, files)
   const engine = new SyncEngine({ pool, files, transfer, store })
   const forward = new ForwardManager({ store, pool })
+  const search = new RemoteSearch(pool)
 
-  const api = buildApi({ ctx, store, pool, files, transfer, engine, forward, version: VERSION })
+  const api = buildApi({ ctx, store, pool, files, transfer, engine, forward, search, version: VERSION })
 
   /** Same admission gate as the built-in `/api` gateway. */
   const admitted = (req) => {

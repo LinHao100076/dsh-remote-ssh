@@ -28,8 +28,19 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
   const [busy, setBusy] = useState('')
   const [error, setError] = useState(undefined)
   const [mapping, setMapping] = useState(undefined)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [caseSensitive, setCaseSensitive] = useState(false)
+  const [regex, setRegex] = useState(false)
+  const [found, setFound] = useState(undefined)
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState(undefined)
   const [toast, flash] = useToast()
   const fileInput = useRef(null)
+  const codeRef = useRef(null)
+  /* Only the newest search may write results: a slow earlier request must not
+     replace the hits of the query the user is actually looking at. */
+  const searchSeq = useRef(0)
 
   /** List one directory and make it current. */
   const load = useCallback(async (target) => {
@@ -57,6 +68,9 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
     setPath('')
     setError(undefined)
     setMapping(undefined)
+    setFound(undefined)
+    setSearchError(undefined)
+    setQuery('')
     let cancelled = false
     void (async () => {
       let root = hostInfo?.home ?? ''
@@ -87,18 +101,73 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
     }
   }
 
-  const openFile = async (entry) => {
-    setPeek({ path: entry.path, size: entry.size, loading: true })
+  const openFile = async (entry, focusLine) => {
+    setPeek({ path: entry.path, size: entry.size, loading: true, focusLine })
     setEditing(false)
     setError(undefined)
     try {
       const value = await api(ctx, 'fs.read', { sessionId, hostId, path: entry.path })
-      setPeek({ path: entry.path, ...value, loading: false })
+      setPeek({ path: entry.path, ...value, loading: false, focusLine })
       setDraft(value.text)
     } catch (failure) {
-      setPeek({ path: entry.path, size: entry.size, error: failure.message })
+      setPeek({ path: entry.path, size: entry.size, error: failure.message, focusLine })
     }
   }
+
+  /**
+   * Run one content search from the current directory.
+   *
+   * The search runs on the remote (`rg`, or `grep` when ripgrep is absent), so
+   * it covers files the browser has never listed — a repository's worth of
+   * code, not just what fits in the mapping.
+   */
+  const runSearch = useCallback(async (text) => {
+    const needle = text.trim()
+    if (needle === '' || hostId === '') {
+      setFound(undefined)
+      setSearchError(undefined)
+      return
+    }
+    const seq = searchSeq.current + 1
+    searchSeq.current = seq
+    setSearching(true)
+    setSearchError(undefined)
+    try {
+      const value = await api(ctx, 'fs.search', {
+        sessionId,
+        hostId,
+        path,
+        query: needle,
+        case: caseSensitive ? 'sensitive' : 'smart',
+        regex,
+        limit: 200,
+      })
+      if (searchSeq.current === seq) setFound(value)
+    } catch (failure) {
+      if (searchSeq.current === seq) {
+        setFound(undefined)
+        setSearchError(failure.message)
+      }
+    } finally {
+      if (searchSeq.current === seq) setSearching(false)
+    }
+  }, [ctx, sessionId, hostId, path, caseSensitive, regex])
+
+  /* Debounced live search; Enter runs it immediately. */
+  useEffect(() => {
+    if (searchOpen !== true || query.trim() === '') return undefined
+    const timer = setTimeout(() => { void runSearch(query) }, 350)
+    return () => clearTimeout(timer)
+  }, [searchOpen, query, runSearch])
+
+  /* Scroll the preview so the selected hit is on screen. */
+  useEffect(() => {
+    const node = codeRef.current
+    if (node === null || peek?.loading === true || peek?.focusLine === undefined) return
+    const lineHeight = Number.parseFloat(window.getComputedStyle(node).lineHeight)
+    const step = Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : 18
+    node.scrollTop = Math.max(0, (peek.focusLine - 1) * step - node.clientHeight / 3)
+  }, [peek?.focusLine, peek?.text, peek?.loading])
 
   const save = async () => {
     if (peek?.path === undefined) return
@@ -256,6 +325,130 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
     </div>
   )
 
+  /* ── search results ─────────────────────────────────────────────────── */
+
+  const hits = found?.hits ?? []
+  const groups = []
+  for (const hit of hits) {
+    const last = groups[groups.length - 1]
+    if (last !== undefined && last.path === hit.path) last.hits.push(hit)
+    else groups.push({ path: hit.path, hits: [hit] })
+  }
+
+  const rootPrefix = path === '' || path === '/' ? '' : path.replace(/\/+$/, '')
+  const shortName = (target) => (rootPrefix !== '' && target.startsWith(rootPrefix)
+    ? target.slice(rootPrefix.length).replace(/^\/+/, '')
+    : target)
+
+  /** Wrap the matched span so a hit stays readable inside a clipped line. */
+  const marked = (text) => {
+    const needle = query.trim()
+    if (needle === '') return text
+    let at = -1
+    let length = needle.length
+    if (regex) {
+      try {
+        const match = new RegExp(needle, caseSensitive ? '' : 'i').exec(text)
+        if (match !== null && match[0] !== '') { at = match.index; length = match[0].length }
+      } catch {
+        return text
+      }
+    } else {
+      at = (caseSensitive ? text : text.toLowerCase()).indexOf(caseSensitive ? needle : needle.toLowerCase())
+    }
+    if (at < 0) return text
+    return (
+      <>
+        {text.slice(0, at)}
+        <mark className="rs-mark">{text.slice(at, at + length)}</mark>
+        {text.slice(at + length)}
+      </>
+    )
+  }
+
+  const summary = searching
+    ? '搜索中…'
+    : found === undefined
+      ? ''
+      : `${found.hits.length} 处 · ${found.files} 个文件 · ${found.engine} · ${found.durationMs}ms${found.truncated ? '（已截断）' : ''}`
+
+  const searchPane = (
+    <div className="rs-search">
+      <div className="rs-sfield">
+        <Icon name="search" size={13} className="rs-sico" />
+        <input
+          className="rs-sinput"
+          autoFocus
+          spellCheck={false}
+          placeholder={`在 ${shortName(path) === '' ? path : shortName(path)} 下搜索…`}
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => { if (event.key === 'Enter') void runSearch(query) }}
+        />
+        {query === '' ? null : (
+          <button
+            type="button"
+            className="rs-sx"
+            title="清空"
+            onClick={() => { setQuery(''); setFound(undefined); setSearchError(undefined) }}
+          >
+            <Icon name="x" size={11} />
+          </button>
+        )}
+      </div>
+
+      <div className="rs-sopts">
+        <button
+          type="button"
+          className={caseSensitive ? 'rs-stog on' : 'rs-stog'}
+          title="区分大小写"
+          aria-pressed={caseSensitive}
+          onClick={() => setCaseSensitive((value) => !value)}
+        >Aa</button>
+        <button
+          type="button"
+          className={regex ? 'rs-stog on' : 'rs-stog'}
+          title="按正则表达式解释"
+          aria-pressed={regex}
+          onClick={() => setRegex((value) => !value)}
+        >.*</button>
+        <span className="rs-snum">{summary}</span>
+      </div>
+
+      <div className="rs-sres">
+        {searchError === undefined ? null : (
+          <div className="rs-err-box" style={{ margin: '8px 0' }}><code>{searchError}</code></div>
+        )}
+        {found === undefined && searching !== true && searchError === undefined
+          ? <div className="rs-hint">输入关键词，回车或稍候自动搜索</div>
+          : null}
+        {found !== undefined && hits.length === 0 && searching !== true
+          ? <div className="rs-hint">没有匹配</div>
+          : null}
+        {groups.map((group) => (
+          <div className="rs-sgroup" key={group.path}>
+            <div className="rs-sghead" title={group.path}>
+              <Icon name="file" size={11} className="rs-fico" />
+              <span className="rs-sgpath">{shortName(group.path)}</span>
+              <span className="rs-sgn">{group.hits.length}</span>
+            </div>
+            {group.hits.map((hit, index) => (
+              <div
+                key={`${hit.line}:${hit.column}:${index}`}
+                className={peek?.path === hit.path && peek?.focusLine === hit.line ? 'rs-shit sel' : 'rs-shit'}
+                title={hit.path}
+                onClick={() => void openFile({ path: hit.path }, hit.line)}
+              >
+                <span className="rs-shn">{hit.line}</span>
+                <span className="rs-sht">{marked(hit.text)}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+
   return (
     <>
       <div className="rs-bar">
@@ -264,19 +457,27 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
         <IconButton name="folderPlus" title="新建目录" onClick={newFolder} />
         <IconButton name="up" title="上传文件" onClick={() => fileInput.current?.click()} />
         <IconButton name="refresh" title="刷新" onClick={() => load(path)} />
+        <IconButton
+          name="search"
+          title="在远端搜索内容"
+          active={searchOpen}
+          onClick={() => setSearchOpen((value) => !value)}
+        />
         <input type="file" multiple ref={fileInput} style={{ display: 'none' }} onChange={upload} />
       </div>
 
       {error !== undefined ? <div className="rs-err-box" style={{ margin: '8px 12px 0' }}><div className="rs-t"><Icon name="warn" size={12} />操作失败</div><code>{error}</code></div> : null}
 
-      <div className="rs-tree">
-        {busy === 'load' && dirs[path] === undefined
-          ? <div className="rs-hint">读取目录…</div>
-          : rowsFor(path, 0)}
-        {(dirs[path]?.length ?? 0) === 0 && busy !== 'load'
-          ? <div className="rs-hint">（空目录）</div>
-          : null}
-      </div>
+      {searchOpen === true ? searchPane : (
+        <div className="rs-tree">
+          {busy === 'load' && dirs[path] === undefined
+            ? <div className="rs-hint">读取目录…</div>
+            : rowsFor(path, 0)}
+          {(dirs[path]?.length ?? 0) === 0 && busy !== 'load'
+            ? <div className="rs-hint">（空目录）</div>
+            : null}
+        </div>
+      )}
 
       {peek === undefined ? null : (
         <div className="rs-peek">
@@ -284,6 +485,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
             <Icon name="file" size={12} className="rs-fico" />
             <span className="rs-peek-path" title={peek.path}>{peek.path.replace(/^.*\//, '')}</span>
             <span className="rs-badge">{peek.loading === true ? '读取中' : formatBytes(peek.size ?? 0)}</span>
+            {peek.focusLine === undefined ? null : <span className="rs-badge">第 {peek.focusLine} 行</span>}
             <span className="rs-peek-meta">{peek.mtimeMs ? sinceLabel(peek.mtimeMs) : ''}</span>
           </div>
 
@@ -296,7 +498,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
               />
-              : <pre className="rs-code">{peek.loading === true ? '…' : (peek.text ?? '')}</pre>}
+              : <pre className="rs-code" ref={codeRef}>{peek.loading === true ? '…' : (peek.text ?? '')}</pre>}
 
           <div className="rs-peek-acts">
             {editing ? (

@@ -49,7 +49,7 @@ function draftKey(draft) {
  * proxy that throws `cannot get property "x" without inject` for anything not
  * listed in the plugin's `inject`, which a plain-object test context hides.
  */
-export function buildApi({ ctx, store, pool, files, transfer, engine, forward, version = '0.0.0' }) {
+export function buildApi({ ctx, store, pool, files, transfer, engine, forward, search, version = '0.0.0' }) {
   /** Stored host row, or a transient one built from a draft. */
   function hostOf(payload, { allowDraft = false } = {}) {
     if (allowDraft && payload.draft !== undefined && payload.draft !== null) {
@@ -171,6 +171,7 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, v
       await forward.stopHost(hostId)
       pool.close(hostId)
       files.forget(hostId)
+      search.forget(hostId)
       return { hostId, status: 'disconnected' }
     },
 
@@ -196,6 +197,29 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, v
       const host = hostForSession(payload)
       const path = requireString(payload, 'path')
       return files.readText(host, path)
+    },
+
+    /**
+     * Search file contents on the remote host.
+     *
+     * Deliberately *not* a local grep over downloaded files: a repository that
+     * matters is always bigger than the mapping, and `rg` on the far side is
+     * both faster and truthful about files the client has never seen.
+     */
+    'fs.search': async (payload) => {
+      const host = hostForSession(payload)
+      const requested = typeof payload.path === 'string' ? payload.path.trim() : ''
+      const root = requested === '' ? await files.home(host) : requested
+      const caseMode = ['smart', 'sensitive', 'insensitive'].includes(payload.case) ? payload.case : 'smart'
+      return search.search(host, {
+        root,
+        query: requireString(payload, 'query'),
+        case: caseMode,
+        regex: payload.regex === true,
+        glob: typeof payload.glob === 'string' ? payload.glob.trim() : '',
+        limit: typeof payload.limit === 'number' ? payload.limit : 200,
+        timeoutMs: typeof payload.timeoutMs === 'number' ? payload.timeoutMs : 30000,
+      })
     },
 
     'fs.write': async (payload) => {
