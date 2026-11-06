@@ -80,6 +80,8 @@ dsh plugin --profile <profile> add -w "/path/to/plugin.tgz"
 
 `-w` 不能省：profile 里有 `pnpm-workspace.yaml`，pnpm 认为根是 workspace root，不带 `-w` 会报 `ERR_PNPM_ADDING_TO_ROOT`。
 
+> **别用裸包名安装。** npm 上已经存在一个同名的 `dsh-remote-ssh` 包，属于另一个作者、是另一个插件（`registry` 里的 `repository` 指向的不是这个仓库）。本项目只通过 GitHub Release 的 tgz 或仓库源码分发，`dsh plugin add dsh-remote-ssh` 这种写法会从 npm 拉到别人的包，而它俩会占同一个 `node_modules/dsh-remote-ssh` 目录 —— 装完你的「远程 SSH」就变成了别人的行为。安装一律给完整路径或 git 地址。GitHub 上同样有别人叫 `dsh-remote-ssh` 的仓库，认 `LinHao100076/` 这个前缀。
+
 装完 `package.json` 会变成：
 
 ```json
