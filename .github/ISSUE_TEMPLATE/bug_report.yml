@@ -8,7 +8,7 @@ body:
       value: |
         先谢谢。**越具体越省事**：现象 + 截图 + 复现路径，三样齐了基本当场能定位。
 
-        ⚠️ 不要贴密码、私钥、真实主机地址 —— 换成占位符。安全漏洞请走 [私密渠道](https://github.com/LinHao100076/dsh-ssh-remote/security/advisories/new)，不要开在这里。
+        ⚠️ 不要贴密码、私钥、真实主机地址 —— 换成占位符。安全漏洞请走 [私密渠道](https://github.com/LinHao100076/dsh-remote-ssh/security/advisories/new)，不要开在这里。
 
   - type: textarea
     id: what

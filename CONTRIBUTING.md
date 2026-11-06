@@ -18,8 +18,8 @@
 ## 开发环境
 
 ```bash
-git clone https://github.com/LinHao100076/dsh-ssh-remote.git
-cd dsh-ssh-remote
+git clone https://github.com/LinHao100076/dsh-remote-ssh.git
+cd dsh-remote-ssh
 npm ci
 npm test          # 先 build 两个 bundle，再跑十三轮测试
 ```

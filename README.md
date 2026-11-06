@@ -1,6 +1,6 @@
 # dsh-remote-ssh
 
-[![CI](https://github.com/LinHao100076/dsh-ssh-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/LinHao100076/dsh-ssh-remote/actions/workflows/ci.yml)
+[![CI](https://github.com/LinHao100076/dsh-remote-ssh/actions/workflows/ci.yml/badge.svg)](https://github.com/LinHao100076/dsh-remote-ssh/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen.svg)](package.json)
 [![DSH](https://img.shields.io/badge/dsh-0.2.0--rc.2-5b6ee1.svg)](package.json)
