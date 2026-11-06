@@ -19,7 +19,22 @@ const AUTH = [
   { value: 'agent', label: 'ssh-agent' },
   { value: 'key', label: '密钥文件' },
   { value: 'password', label: '密码' },
+  { value: 'keyboard', label: '键盘交互 / 2FA' },
 ]
+
+/**
+ * Default credential method for a jump hop.
+ *
+ * Keys and agents can be inherited from the target hop safely — they are the
+ * same identity either way. A password cannot: typing the target's password
+ * into a bastion is how you burn `MaxAuthTries` on the wrong machine, so a
+ * password host starts with `agent` and the person has to choose.
+ */
+function jumpAuthDefault(host) {
+  if (host?.jump?.auth !== undefined) return host.jump.auth.type
+  if (host?.auth?.type === 'password' || host?.auth?.type === 'keyboard') return 'agent'
+  return host?.auth?.type ?? 'agent'
+}
 
 const BLANK = {
   name: '',
@@ -28,9 +43,15 @@ const BLANK = {
   user: '',
   authType: 'agent',
   keyPath: '~/.ssh/id_ed25519',
-  proxyJump: '',
   password: '',
   passphrase: '',
+  jumpHost: '',
+  jumpPort: '22',
+  jumpUser: '',
+  jumpAuthType: 'agent',
+  jumpKeyPath: '~/.ssh/id_ed25519',
+  jumpPassword: '',
+  jumpPassphrase: '',
 }
 
 /** Stored row → form state (secrets are never stored, so they start empty). */
@@ -42,14 +63,48 @@ function fromHost(host) {
     user: host?.user ?? '',
     authType: host?.auth?.type ?? 'agent',
     keyPath: host?.auth?.keyPath ?? '~/.ssh/id_ed25519',
-    proxyJump: host?.proxyJump ?? '',
     password: '',
     passphrase: '',
+    jumpHost: host?.jump?.host ?? host?.proxyJump ?? '',
+    jumpPort: String(host?.jump?.port ?? 22),
+    jumpUser: host?.jump?.user ?? '',
+    jumpAuthType: jumpAuthDefault(host),
+    jumpKeyPath: host?.jump?.auth?.keyPath ?? host?.auth?.keyPath ?? '~/.ssh/id_ed25519',
+    jumpPassword: '',
+    jumpPassphrase: '',
   }
+}
+
+/**
+ * Split `[user@]host[:port]` out of a `ProxyJump` value.
+ *
+ * The client keeps its own copy of this tiny grammar instead of importing
+ * `src/ssh/config.js`: that module reads `~/.ssh/config` through `node:fs`, and
+ * a client bundle must never pull node builtins in. A comma-separated value is
+ * returned as one opaque hop on purpose — the host half is where the "multi-hop
+ * is not supported yet" message belongs, and it has the wording.
+ */
+function splitJump(spec) {
+  const text = String(spec ?? '').trim()
+  if (text === '' || text.includes(',')) return { host: text, port: '22', user: '' }
+  const at = text.lastIndexOf('@')
+  const user = at >= 0 ? text.slice(0, at) : ''
+  let rest = at >= 0 ? text.slice(at + 1) : text
+  let port = '22'
+  const colon = rest.lastIndexOf(':')
+  if (colon > 0 && /^\d+$/.test(rest.slice(colon + 1))) {
+    port = rest.slice(colon + 1)
+    rest = rest.slice(0, colon)
+  }
+  return { host: rest, port, user }
 }
 
 /** Form state → persisted row (no secrets). */
 function toRow(form, id) {
+  const jumpHost = form.jumpHost.trim()
+  // A comma keeps the legacy `proxyJump` field: the pool parses it and refuses
+  // with "只支持一跳" instead of silently dialling a hostname with a comma in it.
+  const chained = jumpHost.includes(',')
   return {
     id,
     name: form.name.trim() === '' ? form.host.trim() : form.name.trim(),
@@ -60,7 +115,18 @@ function toRow(form, id) {
       type: form.authType,
       keyPath: form.authType === 'key' ? form.keyPath.trim() : undefined,
     },
-    proxyJump: form.proxyJump.trim() === '' ? undefined : form.proxyJump.trim(),
+    proxyJump: chained ? jumpHost : undefined,
+    jump: jumpHost === '' || chained
+      ? undefined
+      : {
+        host: jumpHost,
+        port: Number(form.jumpPort) || 22,
+        user: form.jumpUser.trim() === '' ? undefined : form.jumpUser.trim(),
+        auth: {
+          type: form.jumpAuthType,
+          keyPath: form.jumpAuthType === 'key' ? form.jumpKeyPath.trim() : undefined,
+        },
+      },
   }
 }
 
@@ -96,6 +162,8 @@ export function SettingsPane({
     const value = {}
     if (form.password !== '') value.password = form.password
     if (form.passphrase !== '') value.passphrase = form.passphrase
+    if (form.jumpPassword !== '') value.jumpPassword = form.jumpPassword
+    if (form.jumpPassphrase !== '') value.jumpPassphrase = form.jumpPassphrase
     return value
   }
 
@@ -108,13 +176,12 @@ export function SettingsPane({
       const typed = secret()
       setStatus({ tone: 'ok', text: '已保存' })
       if (andConnect === true) {
-        const password = typed.password
-        if (value.host.auth.type === 'password' && (password ?? '') === '') {
+        if (value.host.auth.type === 'password' && (typed.password ?? '') === '') {
           // Nothing to connect with yet; the connect gate asks for it on screen.
           await onSaved(value.host, typed)
           return
         }
-        const passwordOk = await onConnect(value.host, password)
+        const passwordOk = await onConnect(value.host, typed)
         if (!passwordOk) setStatus({ tone: 'error', text: '已保存，但连接失败' })
       }
       await onSaved(value.host, typed)
@@ -135,6 +202,8 @@ export function SettingsPane({
         auth: {
           password: form.password === '' ? undefined : form.password,
           passphrase: form.passphrase === '' ? undefined : form.passphrase,
+          jumpPassword: form.jumpPassword === '' ? undefined : form.jumpPassword,
+          jumpPassphrase: form.jumpPassphrase === '' ? undefined : form.jumpPassphrase,
         },
       })
       setStatus({
@@ -151,6 +220,7 @@ export function SettingsPane({
   const importConfig = (alias) => {
     const found = configHosts.find((entry) => entry.alias === alias)
     if (found === undefined) return
+    const jump = splitJump(found.proxyJump)
     setForm((current) => ({
       ...current,
       name: current.name === '' ? alias : current.name,
@@ -158,7 +228,9 @@ export function SettingsPane({
       port: String(found.port ?? 22),
       user: found.user ?? current.user,
       keyPath: found.identityFile ?? current.keyPath,
-      proxyJump: found.proxyJump ?? current.proxyJump,
+      jumpHost: jump.host,
+      jumpPort: jump.port,
+      jumpUser: jump.user,
       authType: found.identityFile ? 'key' : current.authType,
     }))
   }
@@ -250,9 +322,49 @@ export function SettingsPane({
             </Field>
           ) : null}
 
-          <Field label="ProxyJump（可选，最多两跳）">
-            <Input value={form.proxyJump} onChange={patch('proxyJump')} placeholder="例如 bastion.internal 或 ~/.ssh/config 里的 Host" />
+          {form.authType === 'keyboard' ? (
+            <div className="rs-muted" style={{ marginTop: '-2px' }}>
+              连接时按服务器的提问逐条输入（密码、验证码都可以）。留空即可 —— 有密码就顺手填上，能省一次提问。
+            </div>
+          ) : null}
+
+          <Field label="跳板主机（可选）">
+            <Input value={form.jumpHost} onChange={patch('jumpHost')} placeholder="留空即直连，例如 bastion.internal" />
           </Field>
+
+          {form.jumpHost.trim() === '' ? null : (
+            <div className="rs-card" style={{ marginTop: '2px' }}>
+              <div className="rs-card-b">
+                <div className="rs-muted" style={{ marginBottom: '2px' }}>
+                  跳板这一跳有自己的账号与凭据。目标机的密码不会被拿去试跳板。
+                </div>
+                <div className="rs-grid2">
+                  <Field label="跳板端口">
+                    <Input value={form.jumpPort} onChange={patch('jumpPort')} />
+                  </Field>
+                  <Field label="跳板用户">
+                    <Input value={form.jumpUser} onChange={patch('jumpUser')} placeholder={form.user || 'ubuntu'} />
+                  </Field>
+                </div>
+                <Field label="跳板认证">
+                  <Select value={form.jumpAuthType} onChange={patch('jumpAuthType')} options={AUTH} />
+                </Field>
+                {form.jumpAuthType === 'key' ? (
+                  <Field label="跳板私钥">
+                    <Input value={form.jumpKeyPath} onChange={patch('jumpKeyPath')} />
+                  </Field>
+                ) : null}
+                {form.jumpAuthType === 'password' ? (
+                  <Field label="跳板密码（仅本次会话，不写入磁盘）">
+                    <Input type="password" value={form.jumpPassword} onChange={patch('jumpPassword')} placeholder="留空则连接时提问" />
+                  </Field>
+                ) : null}
+                {form.jumpAuthType === 'keyboard' ? (
+                  <div className="rs-muted">跳板连接时按服务器提问输入，不需要提前填。</div>
+                ) : null}
+              </div>
+            </div>
+          )}
 
           {status !== undefined ? (
             <div className="rs-muted" style={{ color: status.tone === 'ok' ? 'var(--rs-ok)' : 'var(--rs-err)', display: 'flex', gap: '5px', alignItems: 'center' }}>

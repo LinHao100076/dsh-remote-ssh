@@ -60,6 +60,14 @@ export async function apply(ctx, config = {}) {
         void store.upsertHost({ id: hostId, fingerprint })
       }
     },
+    // The jump hop is pinned on the same row as the host, under its own field:
+    // one field would mean a bastion key rotation looks like the target's host
+    // key changing, and the error would name the wrong machine.
+    onJumpFingerprint: (hostId, fingerprint) => {
+      const host = store.host(hostId)
+      if (host === undefined || host.jump?.fingerprint === fingerprint) return
+      void store.upsertHost({ id: hostId, jump: { ...(host.jump ?? {}), fingerprint } })
+    },
   })
   const files = new RemoteFiles(pool)
   const transfer = new Transfer(pool, files)

@@ -11,6 +11,11 @@
  * Password and key-passphrase hosts get their field *here* (issue #2: "没有地方
  * 可以输入密码了"). The secret is typed into a controlled input, handed to the
  * host half for the single attempt, and kept only in the client's memory map.
+ *
+ * The third way in is the server asking a question mid-handshake — a TOTP code,
+ * or a bastion password that was never stored. That prompt is not part of the
+ * form: the connect request is still open, so this view polls for it and answers
+ * in place. One dial, one `MaxAuthTries` budget, no second handshake.
  * @module dsh-remote-ssh/client/connect-view
  */
 import { createElement as h, useEffect, useState } from 'react'
@@ -28,13 +33,30 @@ const ERROR_TITLE = {
   refused: '连接被拒绝',
   'dns-failed': '主机名无法解析',
   'host-key-changed': '主机指纹已变更',
+  'jump-auth-failed': '跳板认证失败',
+  'jump-multi-hop': '跳板配了多跳',
+  'jump-forward-failed': '跳板通道打不开',
+  'needs-credential': '需要重新输入凭据',
+  'auth-timeout': '认证输入超时',
+  'auth-busy': '有认证请求未完成',
+  'auth-cancelled': '已取消',
+  'challenge-stale': '认证请求已失效',
 }
 
 /** Human label for an auth type. */
 function authLabel(host) {
   if (host?.auth?.type === 'password') return '密码'
   if (host?.auth?.type === 'key') return `密钥 ${host.auth.keyPath ?? ''}`.trim()
+  if (host?.auth?.type === 'keyboard') return '键盘交互'
   return 'ssh-agent'
+}
+
+/** The jump hop, from the v0.7 shape or a legacy `proxyJump` string. */
+function jumpLabel(host) {
+  if (host?.jump?.host !== undefined && host.jump.host !== '') {
+    return `${host.jump.user === undefined ? '' : `${host.jump.user}@`}${host.jump.host}:${host.jump.port ?? 22}`
+  }
+  return host?.proxyJump
 }
 
 /** One row in the host list. */
@@ -50,7 +72,7 @@ function HostRow({ item, status, current, onSelect }) {
       <Icon name="server" size={14} className="rs-hico" />
       <span className="rs-htxt">
         <span className="rs-nm"><Dot status={tone} />{item.name}</span>
-        <span className="rs-ad">{item.user}@{item.host}:{item.port}{item.proxyJump ? ` · jump ${item.proxyJump}` : ''}</span>
+        <span className="rs-ad">{item.user}@{item.host}:{item.port}{jumpLabel(item) ? ` · 经 ${jumpLabel(item)}` : ''}</span>
       </span>
       <span className="rs-r">
         {tone === 'connected' ? <span className="rs-badge ok">已连接</span> : null}
@@ -68,6 +90,10 @@ export function ConnectView({
 }) {
   const [password, setPassword] = useState('')
   const [configCount, setConfigCount] = useState(0)
+  const [challenge, setChallenge] = useState(undefined)
+  const [answers, setAnswers] = useState([])
+  const [answerError, setAnswerError] = useState(undefined)
+  const [answering, setAnswering] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -78,6 +104,60 @@ export function ConnectView({
   }, [ctx])
 
   useEffect(() => { setPassword('') }, [host?.id])
+
+  /*
+   * While a handshake is open, ask the host half whether the server is waiting
+   * on a question. Polling rather than returning an error: the connect request
+   * is what holds the handshake, so the answer has to reach it in place.
+   */
+  useEffect(() => {
+    if (status !== 'connecting') {
+      setChallenge(undefined)
+      return undefined
+    }
+    let live = true
+    const read = async () => {
+      try {
+        const value = await api(ctx, 'auth.challenge', { hostId: host?.id })
+        if (!live) return
+        const next = value?.challenge ?? undefined
+        setChallenge((current) => {
+          if (next === undefined) return undefined
+          // Same question still open: keep the object so the boxes keep focus.
+          if (current !== undefined && current.id === next.id) return current
+          return next
+        })
+      } catch {
+        // Best effort: the connect request owns the error, and a failed poll must
+        // not turn into a visible failure of its own.
+      }
+    }
+    void read()
+    const timer = setInterval(read, 600)
+    return () => { live = false; clearInterval(timer) }
+  }, [ctx, status, host?.id])
+
+  /* A new question starts with empty boxes — an OTP typed for the previous
+     prompt must never be replayed into the next one. */
+  useEffect(() => {
+    setAnswers(challenge === undefined ? [] : challenge.prompts.map(() => ''))
+    setAnswerError(undefined)
+  }, [challenge?.id])
+
+  const submitAnswer = async () => {
+    if (challenge === undefined || answering) return
+    setAnswering(true)
+    setAnswerError(undefined)
+    try {
+      await api(ctx, 'auth.answer', { id: challenge.id, answers })
+      setChallenge(undefined)
+    } catch (failure) {
+      setAnswerError(failure.message)
+      if (failure.code === 'challenge-stale') setChallenge(undefined)
+    } finally {
+      setAnswering(false)
+    }
+  }
 
   const errorTitle = error === undefined || error === '' ? undefined : (ERROR_TITLE[errorCode] ?? '连接失败')
   const passwordHost = host?.auth?.type === 'password'
@@ -103,18 +183,58 @@ export function ConnectView({
   /* ── handshake in flight ────────────────────────────────────────────── */
 
   if (status === 'connecting') {
+    const viaJump = jumpLabel(host)
     return (
       <div className="rs-center">
         <div className="rs-big-ico"><Icon name="server" size={20} /></div>
         <h2>正在连接 {host?.name}</h2>
-        <p>使用{authLabel(host)}认证，首次连接会记录主机指纹。</p>
+        <p>
+          {viaJump ? `经 ${viaJump} 中转，` : ''}
+          使用{authLabel(host)}认证，首次连接会记录主机指纹。
+        </p>
         <div className="rs-steps">
           <div className="rs-step done">
             <span className="rs-mark"><Icon name="check" size={9} /></span>解析主机地址
           </div>
+          {viaJump ? (
+            <div className="rs-step done">
+              <span className="rs-mark"><Icon name="check" size={9} /></span>跳板 {viaJump}
+            </div>
+          ) : null}
           <div className="rs-step now"><span className="rs-mark" />建立 SSH 通道 · {host?.user}@{host?.host}:{host?.port}</div>
           <div className="rs-step"><span className="rs-mark" />探测远端环境（uname / tmux）</div>
         </div>
+
+        {challenge !== undefined ? (
+          <div className="rs-cred">
+            <div className="rs-muted">
+              {challenge.hopLabel}
+              {challenge.hop > 1 ? `（第 ${challenge.hop} 跳）` : ''} {challenge.user}@{challenge.host}:{challenge.port}
+              {challenge.name ? ` · ${challenge.name}` : ''}
+            </div>
+            {challenge.instructions ? (
+              <div className="rs-muted">{challenge.instructions}</div>
+            ) : null}
+            {challenge.prompts.map((item, index) => (
+              <Field key={`${challenge.id}-${index}`} label={item.prompt.trim() === '' ? `输入 ${index + 1}` : item.prompt.trim()}>
+                <Input
+                  type={item.echo ? 'text' : 'password'}
+                  value={answers[index] ?? ''}
+                  autoFocus={index === 0}
+                  onChange={(value) => setAnswers((current) => current.map((old, i) => (i === index ? value : old)))}
+                  onKeyDown={(event) => { if (event.key === 'Enter') void submitAnswer() }}
+                />
+              </Field>
+            ))}
+            {answerError !== undefined ? (
+              <div className="rs-muted" style={{ color: 'var(--rs-err)' }}>{answerError}</div>
+            ) : null}
+            <Button variant="primary" onClick={() => void submitAnswer()} disabled={answering}>
+              <Icon name="lock" size={13} />{answering ? '提交中…' : '提交'}
+            </Button>
+          </div>
+        ) : null}
+
         <Button size="sm" variant="ghost" onClick={onCancel}>取消</Button>
       </div>
     )
