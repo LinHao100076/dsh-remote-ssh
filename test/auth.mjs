@@ -316,7 +316,18 @@ poolG.close('behind-jump')
 /* ── 多跳配置：明确拒绝，而不是拿逗号当主机名 ─────────────────────────── */
 
 const poolH = new SshPool({})
-const failureH = await poolH.ensure({ id: 'multi', host: '127.0.0.1', port: 1, user: 'u', proxyJump: 'a,b' })
+// Explicit password: with no `auth` the row defaults to ssh-agent, and a CI
+// runner has no `SSH_AUTH_SOCK` — `hopAuth` would then fail with `no-agent`
+// before the chain is ever parsed. (On Windows the named pipe always exists, so
+// this masking only shows up in CI. It was the one red assertion in PR #11.)
+const failureH = await poolH.ensure({
+  id: 'multi',
+  host: '127.0.0.1',
+  port: 1,
+  user: 'u',
+  auth: { type: 'password', password: 'pw' },
+  proxyJump: 'a,b',
+})
   .then(() => undefined, (error) => error)
 assert.equal(failureH?.code, 'jump-multi-hop', '多跳还没做，要说清楚')
 assert.deepEqual(failureH.details.hops, ['a', 'b'])
