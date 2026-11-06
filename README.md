@@ -12,7 +12,7 @@ DSH（DeepSeek Harness）的远程 SSH 插件：在侧边栏里看远端文件�
   <img src="docs/assets/terminal.png" width="330" alt="终端：tmux 持久会话，刷新后接回同一个 shell">
 </p>
 
-当前版本 **`0.6.1`** —— 第一个正式版，Node 20 与 22 都能装。`0.4.0` 加远端内容搜索，`0.5.0` 加断点续传，`0.6.0` 补上 socks5 动态转发与 `-R` 反向转发，`0.6.1` 修掉「Node 20 上整份宿主端 bundle 加载即抛」的问题。更早的版本在 Release 上都标为 beta，各自坏在哪、后来被哪个版本修掉，写在对应 Release 的说明里。完整变更见 [CHANGELOG](CHANGELOG.md)，下一步见 [ROADMAP](ROADMAP.md)。
+当前版本 **`0.7.0`** —— 没有密钥也能连，隔几层堡垒机也能连。`0.4.0` 加远端内容搜索，`0.5.0` 加断点续传，`0.6.0` 补上 socks5 动态转发与 `-R` 反向转发，`0.6.1` 修掉「Node 20 上整份宿主端 bundle 加载即抛」的问题，`0.7.0` 补上密码 / keyboard-interactive（2FA）登录与多跳跳板链路，Node 20 / 22 / 24 都跑过。更早的版本在 Release 上都标为 beta，各自坏在哪、后来被哪个版本修掉，写在对应 Release 的说明里。完整变更见 [CHANGELOG](CHANGELOG.md)，下一步见 [ROADMAP](ROADMAP.md)。
 
 ## 文档
 
