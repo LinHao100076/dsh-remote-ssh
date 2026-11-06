@@ -39,7 +39,7 @@ jobs:
       - run: npm ci
 
       # pretest 钩子会先重建两个 bundle，所以这里跑的是刚要提交的源码。
-      - name: 十三轮测试
+      - name: 十四轮测试
         run: npm test
 
       # lib/ 是提交进版本库的构建产物（安装时不需要构建）。

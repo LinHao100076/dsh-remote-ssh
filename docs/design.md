@@ -589,7 +589,9 @@ async #connect(host) {
 
 验证：`test/socks5.mjs` 钉协议层（拆包、管道化、三种地址、`BIND`、0 端口、空域名、非 SOCKS、超时、错误码），`test/forward.mjs` 三种形状都跑真实 TCP 往返，其中 `-R` 会故意把底层连接掐掉，验证重连后端口被重新申请回来、隧道自动恢复。界面在真实浏览器里点过一遍：`-D` 的 SOCKS 端口收到 `echo:via-socks`，`-L` 收到 `echo:via-local`，`-R` 收到 `echo:via-reverse`。
 
-### 8.16 跳板：从「一条字符串」到「一串跳板」（v0.7.0 计划）
+### 8.16 跳板：从「一条字符串」到「一串跳板」
+
+> **落地情况**：**一跳已经实现**（`jump` 自带凭据、端口按填写走、TOFU 指纹单独记在 `jumpFingerprint`，错误带跳序号）。**多跳还没做**，`ProxyJump a,b` 现在明确返回 `jump-multi-hop` 而不是拿逗号当主机名。下面第一段描述的是改造前的实现，保留下来作为动机；`hops[]` 那一版模型是 `feat/jump-chain` 的依据。
 
 原型已经按这一版做了：`ui/prototype.html?view=jump`。下面是为什么这么改，以及动手时要盯住的几处。
 
@@ -650,7 +652,9 @@ targetOptions.sock = prev
 
 **改动面：** `src/ssh/pool.js`（链路循环、拆链、错误归位）、`src/ssh/config.js`（`ProxyJump` 展开成多跳）、新增 `client/host-form.jsx`（新建与设置共用：认证方式 + 跳板折叠区 + 链路图 + 每跳卡片）、`client/settings-view.jsx`（摘要行与 `gotoHop`）、`test/forward.mjs` 的假 sshd 补串联的 `direct-tcpip`。测试要钉四件事：两跳真的连通、第二跳的 2222 生效、第二跳凭据与目标机不同也能连、第二跳挂掉时错误里 `hop === 2`。
 
-### 8.17 没有密钥的机器：密码与 keyboard-interactive（v0.7.0 计划）
+### 8.17 没有密钥的机器：密码与 keyboard-interactive
+
+> **落地情况**：前两块（**跳板每一跳的凭据**、**keyboard-interactive**）已实现，`test/auth.mjs` 用真的 `ssh2` 服务端把它们钉住。**「记住密码」还没做** —— 它要系统钥匙串，单独排。下面按「已有 / 还缺」分开写的结构保留原样，读的时候以这条为准。
 
 先说清哪些是已有的：**目标机的密码登录今天就能用** —— `client/connect-view.jsx` 在主机 `auth.type === 'password'` 时给出密码框（旁边写着「仅本次会话，不写入磁盘」），`SshPool.#secrets` 只把密码留在内存、断开即清；密钥被拒时还有「改用密码」的切换按钮。这一节写的是还缺的三块：**跳板每一跳的凭据**、**keyboard-interactive（2FA）**、**「记住密码」**。
 

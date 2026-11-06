@@ -30,8 +30,8 @@
 
 排序不代表承诺，只是方向：
 
-- **密码 / keyboard-interactive 登录**：现在只支持密钥与 ssh-agent。服务器只开 `PasswordAuthentication`（或要 OTP）时完全连不上 —— 这是最容易撞上的一堵墙，所以排在跳板前面。设计见 `docs/design.md` §8.17（`authHandler` 原地等输入、按跳各问各的、密码默认不落盘）。
-- **跳板链路（`ProxyJump` 多跳）**：设计已定、原型已画（`ui/prototype.html` 的「新建连接」或「设置」→ 跳板链路，见 `docs/design.md` §8.16）。现在的实现只认一跳、端口写死 22、凭据默认借用目标机，三处都要换。
+- **密码 / keyboard-interactive 登录**：已在 `main` 上，等下一个版本号发布（设计见 `docs/design.md` §8.17）。支持目标机密码、只开 `PasswordAuthentication` 的服务器、要 OTP 的 keyboard-interactive，以及跳板每跳各用各的凭据；密码只留在内存，不写 `config.json`。还缺「记住密码」—— 那需要系统钥匙串，单独排。
+- **跳板链路（`ProxyJump` 多跳）**：一跳已经能用（`jump` 带自己的凭据，端口按填写走，见 `docs/design.md` §8.16）。剩下的是多跳：原型已画（`ui/prototype.html` 的「新建连接」或「设置」→ 跳板链路），模型要换成有序 `hops[]`，`forwardOut` 的目标是下一跳而不是目标机，拆链从里到外。现在 `ProxyJump a,b` 会明确报 `jump-multi-hop`，不会拿逗号当主机名去连。
 - **远端是 Windows**：路径分隔符、换行、`exec` 与 `mkdir` 的语义差异都没验证过。没有可信的验证环境之前不会声称支持。
 - **传输的并发分块**：现在顺序写是为了让 part 文件的大小永远等于「已写入字节数」。要并发，得先有一套能证明「没有空洞」的账本，否则断点续传会静默损坏文件。
 - **大目录树的增量加载**：现在一次列完整个目录。
