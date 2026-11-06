@@ -147,6 +147,29 @@ const blankSettings = render('settings', { creating: true, hosts: [] })
 assert.match(blankSettings, /新建连接/, 'settings doubles as the create form')
 assert.match(blankSettings, /创建并连接/, 'the create form can connect right away')
 
+/* A stored chain must come back as editable hops, in order, with its summary. */
+const chainHost = {
+  id: 'host-chain',
+  name: 'chain',
+  host: '10.0.0.9',
+  port: 22,
+  user: 'ops',
+  auth: { type: 'key', keyPath: '~/.ssh/id_ed25519' },
+  jump: {
+    hops: [
+      { host: 'bastion-a', port: 22, user: 'j1', auth: { type: 'key', keyPath: '~/.ssh/a' } },
+      { host: 'bastion-b', port: 2222, user: 'j2', auth: { type: 'password' } },
+    ],
+  },
+}
+const chainSettings = render('settings', { host: chainHost, hostId: chainHost.id, hosts: [chainHost] })
+assert.match(chainSettings, /2 跳/, 'summary says how many hops')
+assert.match(chainSettings, /bastion-a:22 → bastion-b:2222/, 'summary shows the chain in traffic order')
+assert.match(chainSettings, /第 1 跳（最先连）/, 'first hop is labelled as the first one dialled')
+assert.match(chainSettings, /第 2 跳/, 'second hop is its own card')
+assert.match(chainSettings, /value="2222"/, 'the second hop keeps its own port')
+assert.match(chainSettings, /这一跳的密码/, 'a password hop offers its own password field')
+
 /* ── the workspace ────────────────────────────────────────────────────── */
 
 const Workspace = exported.NATIVE?.RemoteWorkspace

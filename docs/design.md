@@ -591,7 +591,13 @@ async #connect(host) {
 
 ### 8.16 跳板：从「一条字符串」到「一串跳板」
 
-> **落地情况**：**一跳已经实现**（`jump` 自带凭据、端口按填写走、TOFU 指纹单独记在 `jumpFingerprint`，错误带跳序号）。**多跳还没做**，`ProxyJump a,b` 现在明确返回 `jump-multi-hop` 而不是拿逗号当主机名。下面第一段描述的是改造前的实现，保留下来作为动机；`hops[]` 那一版模型是 `feat/jump-chain` 的依据。
+> **落地情况**：**已按这一节实现**（0.7.0）：`jump.hops[]` 有序链路、每跳自己的端口/账号/凭据、逐跳 TOFU、错误带跳号、界面是同一份表单里的一串卡片。三处与原计划不同的地方，是动手时才看清楚的：
+>
+> 1. **通道被拒是 `jump-forward-failed`，不是「连接超时」。** 当第 N 跳拒绝开通到下一跳的通道（`PermitTunnel no`、没有路由），`forwardOut` 立刻失败，所以错误说的是「第 N 跳开不到 X:port（第 N+1 跳）」。而如果通道开成功了但对面没人应答，才会退化成 `timeout` —— 这两种情况必须分开，前者的修法在堡垒机上，后者的修法在网络里。
+> 2. **指纹回写要把整条链路写出去。** 从 `~/.ssh/config` 的 `ProxyJump` 展开出来的 hop 没有自己的行可以钉指纹，所以 `onJumpFingerprint` 收到的是整条 chain：首次连接顺手把它固化成可编辑的 `jump.hops`，下次就能看见、能改、能单独重钉。不做这一步，`ProxyJump` 主机的堡垒机等于每次连接都重新 TOFU。
+> 3. **`hops` 上限 5 跳**，超过直接报错。链路长到这个程度，问题通常不在客户端。
+>
+> 下面第一段描述的是改造前的实现，保留下来作为动机。
 
 原型已经按这一版做了：`ui/prototype.html?view=jump`。下面是为什么这么改，以及动手时要盯住的几处。
 
@@ -650,7 +656,9 @@ targetOptions.sock = prev
 - 跳板只决定**怎么到达目标**。`-L` / `-D` / `-R` 仍然挂在目标机那条连接上，不存在「从第 2 跳出去开端口」。
 - 不做：跳板层的 `-R`、每跳独立 keepalive、多主机共享一跳（ControlMaster 式复用）。共享一跳看着省一次握手，代价是任何一台主机断开都得判断「这条跳板通道还有没有人用」，在 `SshPool` 里引入引用计数远比省下的 20ms 贵。
 
-**改动面：** `src/ssh/pool.js`（链路循环、拆链、错误归位）、`src/ssh/config.js`（`ProxyJump` 展开成多跳）、新增 `client/host-form.jsx`（新建与设置共用：认证方式 + 跳板折叠区 + 链路图 + 每跳卡片）、`client/settings-view.jsx`（摘要行与 `gotoHop`）、`test/forward.mjs` 的假 sshd 补串联的 `direct-tcpip`。测试要钉四件事：两跳真的连通、第二跳的 2222 生效、第二跳凭据与目标机不同也能连、第二跳挂掉时错误里 `hop === 2`。
+**改动面（实际）：** `src/ssh/pool.js`（`#chainOf` 收敛三种形状、链路循环、从里到外拆链、错误按跳归位）、`src/ssh/config.js`（`ProxyJump` 展开成多跳，已有）、`src/api.js`（`jumpRow` 归一成 `{hops}`、校验每跳、上限 5）、`client/settings-view.jsx`（新建与设置共用的那一份表单：每跳一张卡 + 上移下移删除 + 摘要行）。原计划里的独立 `client/host-form.jsx` 没有拆出来 —— 新建与设置本来就共用 `SettingsPane`，再抽一层只会多一个转发参数的文件。
+
+测试钉住的是：两跳真的连通、第 1 跳的 `direct-tcpip` 目标就是第 2 跳（而不是目标机）、第二跳的端口与凭据都生效、每跳各记一次指纹、失败时 `hop` 指到对的那一跳、旧的单跳形状仍能连、`ProxyJump` 字符串展开成两跳（`test/jump.mjs`）。
 
 ### 8.17 没有密钥的机器：密码与 keyboard-interactive
 

@@ -17,7 +17,7 @@
 import { createHash } from 'node:crypto'
 import ssh2 from 'ssh2'
 import { findSshHost, parseJumpChain } from './config.js'
-import { hopAuth, planPrompts, secretOf, withSecrets } from './auth.js'
+import { hopAuth, normalizeAuth, planPrompts, secretOf, withSecrets } from './auth.js'
 import { RemoteError, classify } from './errors.js'
 import { call, nextId, shq } from '../util.js'
 
@@ -28,6 +28,14 @@ const { Client } = ssh2
 // (`api.js`, `forward/manager.js`, `remote/files.js`); moving the class into its
 // own module must not move those import paths.
 export { RemoteError }
+
+/**
+ * Failures that mean "this hop would not let me in", as opposed to "this hop
+ * is unreachable". The first group is retagged as `jump-auth-failed` so the
+ * panel can offer "改用密码" and name the hop; the second keeps its own code
+ * (`timeout`, `refused`, `dns-failed`) and only gains the hop number.
+ */
+const AUTH_FAILURES = ['auth-failed', 'bad-password', 'no-agent', 'key-unreadable', 'key-invalid']
 
 /** SHA256 fingerprint in the shape OpenSSH prints (`SHA256:base64`). */
 function fingerprintOf(key) {
@@ -54,7 +62,8 @@ export class SshPool {
    * own: a listening port-forward's next inbound socket, or a retried upload,
    * has no UI to re-ask for a password. Cleared as soon as a disconnect is
    * explicit (`close()`) or the plugin unloads.
-   * @type {Map<string, {password?: string, passphrase?: string}>}
+   * @type {Map<string, {password?: string, passphrase?: string,
+   *   hopPasswords?: string[], hopPassphrases?: string[]}>}
    */
   #secrets = new Map()
   /**
@@ -81,7 +90,9 @@ export class SshPool {
    * @param {object} options - pool options.
    * @param {(event: object) => void} [options.onEvent] - status change sink (UI/push).
    * @param {(hostId: string, fingerprint: string) => void} [options.onFingerprint] - persist a TOFU fingerprint.
-   * @param {(hostId: string, fingerprint: string) => void} [options.onJumpFingerprint] - same, for the jump hop.
+   * @param {(hostId: string, fingerprint: string, hop: number, hops: object[]) => void} [options.onJumpFingerprint] -
+   *   same, for one jump hop: `hop` is its index, `hops` the whole chain to write
+   *   back (a chain read from ssh-config has no row of its own to pin to).
    * @param {number} [options.authTimeoutMs] - how long a prompt waits for input.
    */
   constructor({ onEvent, onFingerprint, onJumpFingerprint, authTimeoutMs } = {}) {
@@ -162,137 +173,186 @@ export class SshPool {
   }
 
   /**
-   * The jump hop, from `host.jump` (the shape v0.7 will extend into a chain) or
-   * a legacy `proxyJump` string.
+   * The ordered hops of a jump chain; an empty array means "dial the target".
    *
-   * Two rules earn their own branch here:
+   * Three shapes collapse into one here:
    *
-   * - A jump with no explicit `auth` **inherits the method, not the secret**. The
-   *   old code handed the bastion `host.auth` wholesale, so a password-auth host
-   *   tried the *target's* password on the bastion — the reason "密码 + 跳板"
-   *   never worked, and a quiet way to burn `MaxAuthTries` on the wrong machine.
-   * - `ProxyJump a,b` used to be substring-sliced into the hostname `b`, i.e. it
-   *   dialled a machine that does not exist and timed out. Saying "multi-hop is
-   *   not supported yet" is the honest answer until the chain lands.
+   * - `jump.hops[]` — how a chain is stored;
+   * - `jump.{host,port,user,auth}` — the single-hop shape 0.6.1 wrote, still
+   *   readable so an upgrade does not disconnect anybody;
+   * - `proxyJump` (or `~/.ssh/config`'s `ProxyJump a,b`) — a string, expanded by
+   *   `parseJumpChain` so each hop's own `Host` stanza supplies its port/user.
    *
-   * @returns {{host: string, port: number, user?: string, auth: object, fingerprint?: string}|undefined}
+   * A hop with no `auth` (or `auth.type === 'inherit'`) inherits the target's
+   * **method and key path, never the password**: handing a bastion the target's
+   * password is how `MaxAuthTries` gets burned on the wrong machine. `declared`
+   * records which of the two happened, so a chain that came from
+   * `~/.ssh/config` can be written back with the inheritance explicit instead
+   * of materialising the target's key path onto a bastion.
+   *
+   * @returns {Array<{host: string, port: number, user?: string, auth: object,
+   *   fingerprint?: string, declared: boolean}>}
    */
-  #jumpOf(host) {
+  #chainOf(host) {
     const stored = host.jump
-    if (stored !== undefined && stored !== null && typeof stored.host === 'string' && stored.host !== '') {
-      const config = findSshHost(stored.host)
-      const declared = stored.auth
-      const auth = declared === undefined || declared.type === 'inherit'
-        ? { type: host.auth?.type ?? 'agent', keyPath: host.auth?.keyPath }
-        : withSecrets(declared)
-      return {
-        host: config?.host ?? stored.host,
-        port: Number(stored.port ?? config?.port ?? 22),
-        user: stored.user ?? config?.user ?? host.user,
-        auth,
-        fingerprint: stored.fingerprint,
-      }
+    const rows = Array.isArray(stored?.hops)
+      ? stored.hops
+      : (typeof stored?.host === 'string' && stored.host !== '' ? [stored] : [])
+    if (rows.length > 0) {
+      // A legacy `jumpAuth` was one credential for the one hop that existed then.
+      const legacy = rows.length === 1 ? secretOf(host.jumpAuth) : {}
+      return rows.map((row) => this.#hopOf(host, row, legacy))
     }
     const spec = host.proxyJump ?? findSshHost(host.alias)?.proxyJump
-    if (typeof spec !== 'string' || spec === '') return undefined
-    const hops = parseJumpChain(spec)
-    if (hops.length === 0) return undefined
-    if (hops.length > 1) {
-      throw new RemoteError(
-        'jump-multi-hop',
-        `ProxyJump 配了 ${hops.length} 跳（${spec}），当前只支持一跳。多跳支持在 v0.7.0 的计划里，眼下请先填第一跳。`,
-        400,
-        { hops: hops.map((hop) => hop.host) },
-      )
-    }
-    const config = findSshHost(hops[0].host)
+    if (typeof spec !== 'string' || spec === '') return []
+    return parseJumpChain(spec).map((row) => this.#hopOf(host, row, {}))
+  }
+
+  /** One hop, with ssh-config defaults and the inherit rule applied. */
+  #hopOf(host, row, legacySecret) {
+    const address = typeof row?.host === 'string' ? row.host.trim() : ''
+    if (address === '') throw new RemoteError('jump-bad-host', '跳板缺少主机地址', 400)
+    const config = findSshHost(address)
+    const declared = row.auth !== undefined && row.auth !== null && row.auth.type !== 'inherit'
+    const auth = declared
+      ? withSecrets(row.auth)
+      : { type: host.auth?.type ?? 'agent', keyPath: host.auth?.keyPath, ...legacySecret }
     return {
-      host: config?.host ?? hops[0].host,
-      port: Number(hops[0].port ?? config?.port ?? 22),
-      user: hops[0].user ?? config?.user ?? host.user,
-      // Method and key only: a password lives in memory or nowhere, and the
-      // target's is not a candidate for the bastion.
-      auth: { type: host.auth?.type ?? 'agent', keyPath: host.auth?.keyPath, ...secretOf(host.jumpAuth) },
-      fingerprint: host.jumpFingerprint,
+      host: config?.host ?? address,
+      port: Number(row.port ?? config?.port ?? 22),
+      user: row.user ?? config?.user ?? host.user,
+      auth,
+      fingerprint: row.fingerprint,
+      declared,
     }
   }
 
-  /** TOFU for a jump hop, pinned on the host row rather than on a host of its own. */
-  #verifyJump(host, jump, key) {
-    const fingerprint = fingerprintOf(key)
-    if (jump.fingerprint === undefined || jump.fingerprint === '') {
-      this.onJumpFingerprint(host.id, fingerprint)
-      return true
-    }
-    return jump.fingerprint === fingerprint
+  /** Wrap a hop-less failure so the message says which hop it happened on. */
+  #hopError(failure, number, hop) {
+    return new RemoteError(
+      failure.code,
+      `第 ${number} 跳 ${hop.host}:${hop.port}：${failure.message}`,
+      failure.status,
+      { ...failure.details, hop: number, host: hop.host, port: hop.port },
+    )
   }
 
   /**
-   * Connect through the jump hop and hand back a stream that reaches the target.
+   * TOFU per hop: pinned on `hops[i].fingerprint`, not on a shared field.
+   *
+   * First contact writes the **whole chain** back, not just this hop. That is
+   * what lets a chain read from `~/.ssh/config` converge into editable hops —
+   * a string can never carry a fingerprint, so without this the bastion of a
+   * `ProxyJump` host would be re-trusted on every connect.
+   */
+  #verifyHop(host, index, hop, hops, key) {
+    const fingerprint = fingerprintOf(key)
+    if (hop.fingerprint !== undefined && hop.fingerprint !== '') return hop.fingerprint === fingerprint
+    this.onJumpFingerprint(host.id, fingerprint, index, hops.map((item, at) => ({
+      host: item.host,
+      port: item.port,
+      user: item.user,
+      auth: item.declared ? normalizeAuth(item.auth) : { type: 'inherit' },
+      fingerprint: at === index ? fingerprint : item.fingerprint,
+    })))
+    return true
+  }
+
+  /**
+   * Dial the chain and hand back a stream that reaches the target.
+   *
+   * Every hop is a `direct-tcpip` channel through the *previous* hop, and the
+   * last one opens the channel to the target:
+   *
+   *   hop0 ──forwardOut(hop1)──▶ hop1 ──forwardOut(target)──▶ target
+   *
+   * The destination must be the **next hop**, not the target: pointing the
+   * first hop at `options.host` makes it dial the machine it cannot reach —
+   * the entire reason the chain exists — and the connect then times out on the
+   * one link that was working.
+   *
    * @returns {Promise<{stream: object, count: number, dispose: () => void}|undefined>}
    */
   async #openWithJump(host, options, interactive) {
-    const jump = this.#jumpOf(host)
-    if (jump === undefined) return undefined
-    const config = findSshHost(jump.host)
-    const label = '跳板'
-    const jumpOptions = {
-      host: jump.host,
-      port: jump.port,
-      username: jump.user ?? process.env.USER ?? process.env.USERNAME,
-      readyTimeout: 20000,
-      keepaliveInterval: 15000,
-      keepaliveCountMax: 3,
-      hostVerifier: (key) => this.#verifyJump(host, jump, key),
-      ...hopAuth(jump.auth, { config, label, requirePassword: false }),
+    const hops = this.#chainOf(host)
+    if (hops.length === 0) return undefined
+    const clients = []
+    // Inside out: the last hop carries the target channel, so closing it first
+    // is what releases the stream the outer hops are still piping.
+    const dispose = () => {
+      for (const client of [...clients].reverse()) client.end()
     }
-    if (typeof jumpOptions.username !== 'string' || jumpOptions.username === '') {
-      throw new RemoteError('bad-user', `${label}：缺少登录用户名`, 400)
-    }
-    const bastion = new Client()
-    this.#attachAuth(host, bastion, {
-      hop: 1,
-      label,
-      host: jumpOptions.host,
-      port: jumpOptions.port,
-      user: jumpOptions.username,
-      password: jump.auth?.password,
-      interactive,
-    })
-    const where = `${jumpOptions.username}@${jump.host}:${jump.port}`
-    await new Promise((resolve, reject) => {
-      bastion.once('ready', resolve)
-      bastion.once('error', (error) => reject(bastion.__authError ?? classify(error)))
-      bastion.connect(jumpOptions)
-    }).catch((error) => {
-      bastion.end()
-      this.#noteGuess(bastion, error)
-      const failure = classify(error)
-      // A bare "Permission denied" from a hop that is not the one the user is
-      // looking at is the least useful message in this whole plugin: name the
-      // hop, and keep the original code so the UI can still offer "改用密码".
-      if (['auth-failed', 'bad-password', 'no-agent', 'key-unreadable', 'key-invalid'].includes(failure.code)) {
-        throw new RemoteError(
-          'jump-auth-failed',
-          `跳板 ${where} 认证失败：${failure.message}`,
-          401,
-          { hop: 1, host: jump.host, port: jump.port, user: jump.user, cause: failure.code },
-        )
+    let stream
+    try {
+      for (const [index, hop] of hops.entries()) {
+        const label = hops.length === 1 ? '跳板' : `第 ${index + 1} 跳`
+        const config = findSshHost(hop.host)
+        const hopOptions = {
+          host: hop.host,
+          port: hop.port,
+          username: hop.user ?? process.env.USER ?? process.env.USERNAME,
+          readyTimeout: 20000,
+          keepaliveInterval: 15000,
+          keepaliveCountMax: 3,
+          hostVerifier: (key) => this.#verifyHop(host, index, hop, hops, key),
+          ...hopAuth(hop.auth, { config, label, requirePassword: false }),
+        }
+        if (typeof hopOptions.username !== 'string' || hopOptions.username === '') {
+          throw new RemoteError('bad-user', `${label}：缺少登录用户名`, 400)
+        }
+        if (stream !== undefined) hopOptions.sock = stream
+        const client = new Client()
+        clients.push(client)
+        this.#attachAuth(host, client, {
+          hop: index + 1,
+          label,
+          host: hopOptions.host,
+          port: hopOptions.port,
+          user: hopOptions.username,
+          password: hop.auth?.password,
+          interactive,
+        })
+        const number = index + 1
+        const where = `${hopOptions.username}@${hop.host}:${hop.port}`
+        await new Promise((resolve, reject) => {
+          client.once('ready', resolve)
+          client.once('error', (error) => reject(client.__authError ?? classify(error)))
+          client.connect(hopOptions)
+        }).catch((error) => {
+          this.#noteGuess(client, error)
+          const failure = classify(error)
+          // A bare "Permission denied" from a hop that is not the one on screen
+          // is the least useful message in this plugin: name the hop, and keep a
+          // `cause` so the UI can still offer "改用密码".
+          if (AUTH_FAILURES.includes(failure.code)) {
+            throw new RemoteError(
+              'jump-auth-failed',
+              `${label} ${where} 认证失败：${failure.message}`,
+              401,
+              { hop: number, host: hop.host, port: hop.port, user: hop.user, cause: failure.code },
+            )
+          }
+          throw this.#hopError(failure, number, hop)
+        })
+        // Post-handshake drops are the pool's business, not the caller's.
+        client.on('error', () => {})
+        const nextHop = hops[index + 1]
+        const next = nextHop ?? { host: options.host, port: options.port }
+        const target = nextHop === undefined ? '目标机' : `第 ${number + 1} 跳`
+        stream = await call(client, 'forwardOut', '127.0.0.1', 0, next.host, next.port).catch((error) => {
+          throw new RemoteError(
+            'jump-forward-failed',
+            `${label} ${where} 无法开通到 ${next.host}:${next.port}（${target}）的通道：${error.message}`,
+            502,
+            { hop: number, host: hop.host, port: hop.port, to: { host: next.host, port: next.port } },
+          )
+        })
       }
-      throw failure
-    })
-    // Post-handshake drops are the pool's business, not the caller's.
-    bastion.on('error', () => {})
-    const stream = await call(bastion, 'forwardOut', '127.0.0.1', 0, options.host, options.port).catch((error) => {
-      bastion.end()
-      throw new RemoteError(
-        'jump-forward-failed',
-        `跳板 ${where} 无法开通到 ${options.host}:${options.port} 的通道：${error.message}`,
-        502,
-        { hop: 1, host: jump.host },
-      )
-    })
-    return { stream, count: 1, dispose: () => bastion.end() }
+    } catch (error) {
+      dispose()
+      throw error
+    }
+    return { stream, count: hops.length, dispose }
   }
 
   /**
@@ -330,8 +390,10 @@ export class SshPool {
    * drop arrives without the password (the row never stores one), so the
    * remembered credential fills the gap. Nothing here touches the state file.
    *
-   * Jump secrets live under `jumpPassword` / `jumpPassphrase` so one map can hold
-   * both hops without the target's password ever landing on the bastion.
+   * Jump secrets are indexed by hop (`hopPasswords[0]` is the first bastion), so
+   * one map can hold a whole chain without the target's password ever landing on
+   * a bastion. `jumpPassword` / `jumpPassphrase` are the single-hop names 0.6.1
+   * wrote and are read as hop 0.
    */
   #withSecret(host) {
     const remembered = this.#secrets.get(host.id)
@@ -339,14 +401,24 @@ export class SshPool {
     const auth = { ...(host.auth ?? { type: 'agent' }) }
     if (remembered.password !== undefined) auth.password = remembered.password
     if (remembered.passphrase !== undefined) auth.passphrase = remembered.passphrase
-    let { jump } = host
-    if (jump !== undefined && (remembered.jumpPassword !== undefined || remembered.jumpPassphrase !== undefined)) {
-      const jumpAuth = { ...(jump.auth ?? {}) }
-      if (remembered.jumpPassword !== undefined) jumpAuth.password = remembered.jumpPassword
-      if (remembered.jumpPassphrase !== undefined) jumpAuth.passphrase = remembered.jumpPassphrase
-      jump = { ...jump, auth: jumpAuth }
-    }
-    return { ...host, auth, jump }
+    if (host.jump === undefined) return { ...host, auth }
+    const rows = Array.isArray(host.jump.hops) ? host.jump.hops : [host.jump]
+    const passwords = remembered.hopPasswords ?? []
+    const passphrases = remembered.hopPassphrases ?? []
+    const hops = rows.map((row, index) => {
+      const password = passwords[index] ?? (index === 0 ? remembered.jumpPassword : undefined)
+      const passphrase = passphrases[index] ?? (index === 0 ? remembered.jumpPassphrase : undefined)
+      if (password === undefined && passphrase === undefined) return row
+      return {
+        ...row,
+        auth: {
+          ...(row.auth ?? {}),
+          ...(password === undefined ? {} : { password }),
+          ...(passphrase === undefined ? {} : { passphrase }),
+        },
+      }
+    })
+    return { ...host, auth, jump: { hops } }
   }
 
   /**
@@ -579,9 +651,19 @@ export class SshPool {
    */
   #remember(hostId, resolved) {
     const secret = secretOf(resolved.auth)
-    const jumpSecret = resolved.jump?.auth === undefined ? {} : secretOf(resolved.jump.auth)
-    if (jumpSecret.password !== undefined) secret.jumpPassword = jumpSecret.password
-    if (jumpSecret.passphrase !== undefined) secret.jumpPassphrase = jumpSecret.passphrase
+    const hopPasswords = []
+    const hopPassphrases = []
+    let hopped = false
+    for (const hop of this.#chainOf(resolved)) {
+      const hopSecret = secretOf(hop.auth)
+      hopPasswords.push(hopSecret.password)
+      hopPassphrases.push(hopSecret.passphrase)
+      if (hopSecret.password !== undefined || hopSecret.passphrase !== undefined) hopped = true
+    }
+    if (hopped) {
+      secret.hopPasswords = hopPasswords
+      secret.hopPassphrases = hopPassphrases
+    }
     if (Object.keys(secret).length === 0) this.#secrets.delete(hostId)
     else this.#secrets.set(hostId, secret)
   }

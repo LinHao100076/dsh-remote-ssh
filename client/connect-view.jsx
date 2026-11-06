@@ -34,7 +34,6 @@ const ERROR_TITLE = {
   'dns-failed': '主机名无法解析',
   'host-key-changed': '主机指纹已变更',
   'jump-auth-failed': '跳板认证失败',
-  'jump-multi-hop': '跳板配了多跳',
   'jump-forward-failed': '跳板通道打不开',
   'needs-credential': '需要重新输入凭据',
   'auth-timeout': '认证输入超时',
@@ -51,12 +50,15 @@ function authLabel(host) {
   return 'ssh-agent'
 }
 
-/** The jump hop, from the v0.7 shape or a legacy `proxyJump` string. */
+/** The jump chain as one line: `a:22 → b:2222`, or a legacy `ProxyJump` string. */
 function jumpLabel(host) {
-  if (host?.jump?.host !== undefined && host.jump.host !== '') {
-    return `${host.jump.user === undefined ? '' : `${host.jump.user}@`}${host.jump.host}:${host.jump.port ?? 22}`
-  }
-  return host?.proxyJump
+  const hops = Array.isArray(host?.jump?.hops)
+    ? host.jump.hops
+    : (typeof host?.jump?.host === 'string' && host.jump.host !== '' ? [host.jump] : [])
+  if (hops.length === 0) return host?.proxyJump
+  return hops
+    .map((hop) => `${hop.user === undefined ? '' : `${hop.user}@`}${hop.host}:${hop.port ?? 22}`)
+    .join(' → ')
 }
 
 /** One row in the host list. */
@@ -208,8 +210,7 @@ export function ConnectView({
         {challenge !== undefined ? (
           <div className="rs-cred">
             <div className="rs-muted">
-              {challenge.hopLabel}
-              {challenge.hop > 1 ? `（第 ${challenge.hop} 跳）` : ''} {challenge.user}@{challenge.host}:{challenge.port}
+              {challenge.hopLabel} {challenge.user}@{challenge.host}:{challenge.port}
               {challenge.name ? ` · ${challenge.name}` : ''}
             </div>
             {challenge.instructions ? (

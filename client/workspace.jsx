@@ -178,7 +178,7 @@ export function Workspace(props) {
     // `keyboard` hosts carry a password only if one was typed before; without it
     // the handshake itself asks, so there is nothing to gate here.
     const secret = {}
-    for (const key of ['password', 'passphrase', 'jumpPassword', 'jumpPassphrase']) {
+    for (const key of ['password', 'passphrase', 'jumpPasswords', 'jumpPassphrases']) {
       if (cached[key] !== undefined) secret[key] = cached[key]
     }
     void connect(target, secret)
