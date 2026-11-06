@@ -59,7 +59,7 @@ scripts/           对着真实服务器跑的验收脚本；`dev-remote.mjs` �
 
 > 原型里没有「转发」视图 —— 端口转发晚于原型（`v0.2.0`），那一屏是照着原型的 token 与栅格补的，没有回填进原型。改转发界面时以 `client/forward-view.jsx` 和 `client/styles.js` 为准。
 
-> 「新建连接」与「设置」里的**跳板链路**和**密码 / 2FA 认证**已经是实现，不再是设计稿：密码登录、只开 `PasswordAuthentication` 的服务器、要 OTP 的 keyboard-interactive、以及跳板自带凭据都能用（`docs/design.md` §8.16、§8.17）。**还没实现的是多跳** —— 现在只认一跳，`ProxyJump a,b` 会明确报 `jump-multi-hop` 而不是假装能连。跳板不是独立页面：它是「这台主机怎么连」的一部分，和主机参数共用同一个表单。
+> 「新建连接」与「设置」里的**跳板链路**和**密码 / 2FA 认证**已经是实现，不再是设计稿：密码登录、只开 `PasswordAuthentication` 的服务器、要 OTP 的 keyboard-interactive 都能用（`docs/design.md` §8.16、§8.17）；跳板可以配**多跳**，一串卡片按流量顺序排（第 1 跳 → 第 2 跳 → 目标机），每跳带自己的端口、账号与认证方式，摘要行写着 `2 跳 bastion-a:22 → bastion-b:2222`。`~/.ssh/config` 的 `ProxyJump a,b` 会展开成两跳。跳板不是独立页面：它是「这台主机怎么连」的一部分，和主机参数共用同一个表单 —— 给它一个顶级入口等于让同一件事有两个真值来源。
 
 面板按原型的 424px 设计，宽度跟着右侧栏走；原型里的深色版本通过 `light-dark()` 复用同一套 token，自动跟随 DSH 的主题。
 
@@ -197,7 +197,7 @@ SOCKS5 只实现 `CONNECT`。`BIND` 和 `UDP ASSOCIATE` 会明确回 `0x07 comma
 ## 验证
 
 ```bash
-npm test             # 先自动 build（两个 bundle），再跑十四轮 Node 测试
+npm test             # 先自动 build（两个 bundle），再跑十五轮 Node 测试
 ```
 
 `npm test` 有 `pretest` 钩子，会先重建两个 bundle —— 否则渲染测试可能跑在旧产物上，改了代码却仍报绿。
@@ -206,7 +206,8 @@ npm test             # 先自动 build（两个 bundle），再跑十四轮 Node
 | --- | --- |
 | `test/smoke.mjs` | 路由、主机、映射、转发规则的增删与校验、落盘、排除规则、终端帧 |
 | `test/ssh.mjs` | 握手、认证、exec、PTY、TOFU、错误分类、连接复用。跑两遍：一遍对 `src/`，一遍对 `lib/server.mjs`（`--bundle`），证明内联进来的 `ssh2` 还能握手 |
-| `test/auth.mjs` | 起真的 `ssh2` 服务端：只开 keyboard-interactive 的机器、密码 + OTP 两个 prompt、猜错后第二轮改成问人、后台重连没人可问（`needs-credential`）、提问超时、跳板与目标机各用各的凭据、多跳配置明确拒绝 |
+| `test/auth.mjs` | 起真的 `ssh2` 服务端：只开 keyboard-interactive 的机器、密码 + OTP 两个 prompt、猜错后第二轮改成问人、后台重连没人可问（`needs-credential`）、提问超时、跳板与目标机各用各的凭据 |
+| `test/jump.mjs` | 两个真跳板串一个真目标机：第 1 跳的 `direct-tcpip` 目标必须是**第 2 跳**（记录下来的通道请求才看得出来，写成目标机也能「看起来对」）、第 2 跳用自己的端口与账号、每跳各记一次 TOFU、失败带 `hop`、0.6.1 的单跳形状仍能连、`ProxyJump a,b` 展开成两跳 |
 | `test/files.mjs` | 列表、文本守卫、原子写、陈旧检测、目录操作 |
 | `test/transfer.mjs` | 分块传输与断点续传：中断后从 part 文件大小继续、只补发剩余、源文件变化时指纹不匹配不复用、过期 part 不被误用、清理只删 part、目录遍历跳过 part |
 | `test/forward.mjs` | 三种转发都是真实 TCP 往返：`-L` 穿透 `direct-tcpip`、`-D` 走完整 SOCKS5 握手（含管道化首包、失败回 0x05）、`-R` 穿透 `forwarded-tcpip` 并在断线重连后重新申请端口、停止时让服务器释放端口；另加通配地址判重、字节统计、端口占用、autoStart、落盘无密码 |
