@@ -156,21 +156,71 @@ export function parseDirectives(directives) {
 }
 
 /**
+ * Split a `ProxyJump` value into hops.
+ *
+ * The value is a comma-separated list in ssh's own grammar
+ * (`[user@]host[:port]`, IPv6 in brackets). Callers get every hop so the one
+ * that only supports a single jump can say so — the previous code sliced at the
+ * first `,` and dialled the remainder as a hostname, which fails as a timeout
+ * against a machine that does not exist.
+ *
+ * @param {string} spec - the raw `ProxyJump` value.
+ * @returns {Array<{host: string, port?: number, user?: string}>} hops, in order.
+ */
+export function parseJumpChain(spec) {
+  if (typeof spec !== 'string') return []
+  return spec
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '')
+    .map((item) => {
+      const at = item.lastIndexOf('@')
+      const user = at >= 0 ? item.slice(0, at) : undefined
+      let rest = at >= 0 ? item.slice(at + 1) : item
+      let port
+      const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(rest)
+      if (bracketed !== null) {
+        rest = bracketed[1]
+        if (bracketed[2] !== undefined) port = Number(bracketed[2])
+      } else {
+        const colon = rest.lastIndexOf(':')
+        if (colon > 0 && /^\d+$/.test(rest.slice(colon + 1))) {
+          port = Number(rest.slice(colon + 1))
+          rest = rest.slice(0, colon)
+        }
+      }
+      const hop = { host: rest }
+      if (port !== undefined) hop.port = port
+      if (user !== undefined && user !== '') hop.user = user
+      return hop
+    })
+}
+
+/**
  * Read the user's ssh config and return its connectable hosts.
+ *
+ * A config that cannot be read is treated exactly like one that does not exist:
+ * the file is a convenience, never a requirement, and a permission problem
+ * (sandboxed test runner, a `config` owned by root, an unreadable Include)
+ * must not turn "connect to this host by address" into a failed connection.
  * @returns {Array<Record<string, string|number|undefined>>} hosts, empty when no config exists.
  */
 export function readSshConfig() {
-  const path = join(homedir(), '.ssh', 'config')
-  if (!existsSync(path)) return []
-  const hosts = parseDirectives(readConfigFile(path, 0, new Set()))
-  return hosts.map((host) => ({
-    alias: host.alias,
-    host: host.host ?? host.alias,
-    port: host.port ?? 22,
-    user: host.user,
-    identityFile: host.identityFile,
-    proxyJump: host.proxyJump,
-  }))
+  try {
+    const path = join(homedir(), '.ssh', 'config')
+    if (!existsSync(path)) return []
+    const hosts = parseDirectives(readConfigFile(path, 0, new Set()))
+    return hosts.map((host) => ({
+      alias: host.alias,
+      host: host.host ?? host.alias,
+      port: host.port ?? 22,
+      user: host.user,
+      identityFile: host.identityFile,
+      proxyJump: host.proxyJump,
+    }))
+  } catch {
+    return []
+  }
 }
 
 /**

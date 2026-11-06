@@ -175,11 +175,12 @@ export function Workspace(props) {
       setErrorCode('bad-password')
       return
     }
-    const secret = target.auth?.type === 'password' && cached.password !== undefined
-      ? { password: cached.password }
-      : target.auth?.type === 'key' && cached.passphrase !== undefined
-        ? { passphrase: cached.passphrase }
-        : {}
+    // `keyboard` hosts carry a password only if one was typed before; without it
+    // the handshake itself asks, so there is nothing to gate here.
+    const secret = {}
+    for (const key of ['password', 'passphrase', 'jumpPassword', 'jumpPassphrase']) {
+      if (cached[key] !== undefined) secret[key] = cached[key]
+    }
     void connect(target, secret)
   }, [connect, host])
 
@@ -209,8 +210,11 @@ export function Workspace(props) {
   }, [ctx, host, start])
 
   /** The connect page asked for a password; hand it to the API verbatim. */
-  const connectWithPassword = useCallback(async (target, password) => {
-    const ok = await connect(target, { password })
+  const connectWithPassword = useCallback(async (target, secret) => {
+    // The settings form hands over every secret it collected (target password,
+    // key passphrase, jump password); the gate hands over a bare string.
+    const payload = typeof secret === 'string' ? { password: secret } : (secret ?? {})
+    const ok = await connect(target, payload)
     if (ok) flash(`已连接 ${target.name}`)
     return ok
   }, [connect, flash])

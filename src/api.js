@@ -8,6 +8,7 @@
  * @module dsh-remote-ssh/api
  */
 import { readSshConfig } from './ssh/config.js'
+import { AUTH_TYPES, normalizeAuth } from './ssh/auth.js'
 import { RemoteError } from './ssh/pool.js'
 import { ApiError, requireAbsolutePath, requireString } from './wire.js'
 import { nextId } from './util.js'
@@ -43,6 +44,33 @@ function draftKey(draft) {
 }
 
 /**
+ * The persisted half of a jump hop, or `undefined` when there is none.
+ *
+ * The shape is deliberately the one a chain will use (`{host, port, user, auth,
+ * fingerprint}`), so v0.7 only has to wrap it in `hops: [ … ]` instead of
+ * migrating a flat pile of `jumpHost` / `jumpPort` / `jumpAuth` fields.
+ */
+function jumpRow(raw) {
+  if (raw === undefined || raw === null) return undefined
+  const host = typeof raw.host === 'string' ? raw.host.trim() : ''
+  if (host === '') return undefined
+  const port = Number(raw.port ?? 22)
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new ApiError('bad-port', '跳板端口必须是 1-65535', 400)
+  }
+  const user = typeof raw.user === 'string' && raw.user.trim() !== '' ? raw.user.trim() : undefined
+  const declared = raw.auth === undefined || raw.auth === null ? { type: 'inherit' } : raw.auth
+  const auth = declared.type === 'inherit'
+    ? { type: 'inherit' }
+    : normalizeAuth(declared)
+  if (auth.type === 'key' && auth.keyPath === undefined) {
+    throw new ApiError('missing-key', '跳板的密钥认证需要指定私钥路径', 400)
+  }
+  const fingerprint = typeof raw.fingerprint === 'string' && raw.fingerprint !== '' ? raw.fingerprint : undefined
+  return { host, port, user, auth, fingerprint }
+}
+
+/**
  * Build the dispatch table.
  *
  * `version` is passed in rather than read off `ctx`: a real cordis context is a
@@ -52,13 +80,28 @@ function draftKey(draft) {
 export function buildApi({ ctx, store, pool, files, transfer, engine, forward, search, version = '0.0.0' }) {
   /** Stored host row, or a transient one built from a draft. */
   function hostOf(payload, { allowDraft = false } = {}) {
+    // Passwords and passphrases arrive per request and never touch the store.
+    // The jump hop's secrets ride in the same object under their own names, so
+    // one `auth` payload can carry both hops without them ever crossing over.
+    const secrets = payload.auth ?? {}
+    const plain = { ...secrets }
+    delete plain.jumpPassword
+    delete plain.jumpPassphrase
+    const withSecrets = (host) => {
+      const auth = { ...(host.auth ?? { type: 'agent' }), ...plain }
+      if (host.jump === undefined) return { ...host, auth }
+      const jumpAuth = { ...(host.jump.auth ?? {}) }
+      if (typeof secrets.jumpPassword === 'string' && secrets.jumpPassword !== '') jumpAuth.password = secrets.jumpPassword
+      if (typeof secrets.jumpPassphrase === 'string' && secrets.jumpPassphrase !== '') jumpAuth.passphrase = secrets.jumpPassphrase
+      return { ...host, auth, jump: { ...host.jump, auth: jumpAuth } }
+    }
     if (allowDraft && payload.draft !== undefined && payload.draft !== null) {
       const draft = payload.draft
       // A draft that carries a real id is an edit of that host: it must keep the
       // host key pinned on first contact, otherwise "测试连接" on an edited host
       // would silently re-pin a *changed* key and the protection would be gone.
       const edited = typeof draft.id === 'string' && draft.id !== '' ? store.host(draft.id) : undefined
-      const row = {
+      return withSecrets({
         id: typeof draft.id === 'string' && draft.id !== '' ? draft.id : draftKey(draft),
         name: draft.name ?? draft.host ?? 'draft',
         host: draft.host,
@@ -66,16 +109,15 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
         user: draft.user,
         alias: draft.alias,
         proxyJump: draft.proxyJump,
+        jump: jumpRow(draft.jump),
         fingerprint: draft.fingerprint ?? edited?.fingerprint,
-        auth: { ...(draft.auth ?? { type: 'agent' }), ...(payload.auth ?? {}) },
-      }
-      return row
+        auth: draft.auth ?? { type: 'agent' },
+      })
     }
     const hostId = requireString(payload, 'hostId')
     const stored = store.host(hostId)
     if (stored === undefined) throw new ApiError('host-missing', '主机不存在，请先保存连接', 404)
-    // Passwords and passphrases arrive per request and never touch the store.
-    return payload.auth === undefined ? stored : { ...stored, auth: { ...stored.auth, ...payload.auth } }
+    return withSecrets(stored)
   }
 
   /** Host for a session-scoped operation: explicit id, else the primary mapping. */
@@ -117,9 +159,10 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
         user,
         alias: typeof host.alias === 'string' ? host.alias : undefined,
         proxyJump: typeof host.proxyJump === 'string' && host.proxyJump !== '' ? host.proxyJump : undefined,
+        jump: jumpRow(host.jump),
         fingerprint: typeof host.fingerprint === 'string' ? host.fingerprint : undefined,
         auth: {
-          type: ['agent', 'key', 'password'].includes(host.auth?.type) ? host.auth.type : 'agent',
+          type: AUTH_TYPES.includes(host.auth?.type) ? host.auth.type : 'agent',
           keyPath: typeof host.auth?.keyPath === 'string' ? host.auth.keyPath : undefined,
         },
         lastUsedAt: Date.now(),
@@ -154,7 +197,11 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
 
     'hosts.connect': async (payload) => {
       const host = hostOf(payload, { allowDraft: true })
-      await pool.ensure(host)
+      // `interactive` is what separates "a person clicked 连接" from "a listener
+      // needs its socket back": only the first may stop and ask for a code. The
+      // second must fail with `needs-credential` rather than hang on a prompt
+      // nobody is looking at.
+      await pool.ensure(host, { interactive: true })
       const info = await files.info(host)
       if (payload.persistLastUsed === true) {
         await store.upsertHost({ id: host.id, lastUsedAt: Date.now() })
@@ -164,6 +211,25 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
       // as a failed connect.
       const forwards = await forward.startAll(host.id)
       return { hostId: host.id, status: 'connected', info, forwards }
+    },
+
+    /* ── interactive authentication ────────────────────────────────── */
+
+    /**
+     * The prompt the handshake is waiting on, if any.
+     *
+     * `hosts.connect` stays open while the server wants a code, so the panel
+     * polls this instead of the request returning an error and needing a second
+     * handshake: one dial, one `MaxAuthTries` budget.
+     */
+    'auth.challenge': async (payload) => ({
+      challenge: pool.challenge(typeof payload.hostId === 'string' ? payload.hostId : undefined) ?? null,
+    }),
+
+    'auth.answer': async (payload) => {
+      const id = requireString(payload, 'id')
+      const answers = Array.isArray(payload.answers) ? payload.answers : []
+      return pool.answerAuth(id, answers)
     },
 
     'hosts.disconnect': async (payload) => {

@@ -15,60 +15,23 @@
  * @module dsh-remote-ssh/ssh/pool
  */
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
 import ssh2 from 'ssh2'
-import { findSshHost } from './config.js'
-import { expandHome } from './paths.js'
-import { call, shq } from '../util.js'
+import { findSshHost, parseJumpChain } from './config.js'
+import { hopAuth, planPrompts, secretOf, withSecrets } from './auth.js'
+import { RemoteError, classify } from './errors.js'
+import { call, nextId, shq } from '../util.js'
 
 // `ssh2` is CommonJS; the default import is the only portable form under ESM.
 const { Client } = ssh2
 
-/** Error with a stable machine-readable code for the JSON API. */
-export class RemoteError extends Error {
-  constructor(code, message, status = 400, details) {
-    super(message)
-    this.name = 'RemoteError'
-    this.code = code
-    this.status = status
-    this.details = details
-  }
-}
+// Re-exported here because every other module imports its errors from the pool
+// (`api.js`, `forward/manager.js`, `remote/files.js`); moving the class into its
+// own module must not move those import paths.
+export { RemoteError }
 
 /** SHA256 fingerprint in the shape OpenSSH prints (`SHA256:base64`). */
 function fingerprintOf(key) {
   return `SHA256:${createHash('sha256').update(key).digest('base64').replace(/=+$/, '')}`
-}
-
-/** `SSH_AUTH_SOCK`, or the Windows OpenSSH named pipe when unset. */
-function agentSocket() {
-  if (process.env.SSH_AUTH_SOCK) return process.env.SSH_AUTH_SOCK
-  if (process.platform === 'win32') return '\\\\.\\pipe\\openssh-ssh-agent'
-  return undefined
-}
-
-/** Map an ssh2 failure to a user-facing code the UI can branch on. */
-function classify(error) {
-  const message = String(error?.message ?? error)
-  if (/All configured authentication methods failed/i.test(message)) {
-    return new RemoteError('auth-failed', '认证失败：密钥/密码被拒绝，或密钥未加入远端 authorized_keys', 401)
-  }
-  if (/Host denied|host key verification failed|Host key verification/i.test(message)) {
-    return new RemoteError('host-key-changed', '主机指纹与首次记录不一致，已中止连接', 409)
-  }
-  if (/Timed out while waiting for handshake|ETIMEDOUT|timeout/i.test(message)) {
-    return new RemoteError('timeout', '连接超时：检查主机地址、端口与网络可达性', 504)
-  }
-  if (/ENOTFOUND|getaddrinfo/i.test(message)) {
-    return new RemoteError('dns-failed', '主机名无法解析', 400)
-  }
-  if (/ECONNREFUSED/i.test(message)) {
-    return new RemoteError('refused', '连接被拒绝：端口未监听或被防火墙拦截', 502)
-  }
-  if (/Cannot parse privateKey|bad passphrase|Encrypted private OpenSSH key/i.test(message)) {
-    return new RemoteError('key-invalid', '私钥无法解析：检查路径、格式或 passphrase', 400)
-  }
-  return new RemoteError('ssh-error', message, 502)
 }
 
 export class SshPool {
@@ -95,13 +58,37 @@ export class SshPool {
    */
   #secrets = new Map()
   /**
+   * Hops whose single hidden prompt was filled with the password and rejected.
+   *
+   * `planPrompts` may guess when a server asks exactly one hidden question
+   * without naming it (`Contraseña:`, `パスワード:`) — the alternative is asking
+   * for a password we already hold. One guess per hop is enough: ssh2 will not
+   * resubmit the same method inside one handshake, so repeating the guess on the
+   * next attempt would only burn another `MaxAuthTries` on the same wrong answer.
+   * @type {Set<string>}
+   */
+  #guessed = new Set()
+  /**
+   * The one interactive prompt currently waiting for a person, if any.
+   *
+   * At most one: ssh2 answers within a single handshake, and two open dialogs
+   * could not be told apart by the panel. `challenge()` / `answerAuth()` are the
+   * only public doors to it.
+   * @type {{id: string, hostId: string, resolve: Function, reject: Function, timer: object}|undefined}
+   */
+  #challenge
+  /**
    * @param {object} options - pool options.
    * @param {(event: object) => void} [options.onEvent] - status change sink (UI/push).
    * @param {(hostId: string, fingerprint: string) => void} [options.onFingerprint] - persist a TOFU fingerprint.
+   * @param {(hostId: string, fingerprint: string) => void} [options.onJumpFingerprint] - same, for the jump hop.
+   * @param {number} [options.authTimeoutMs] - how long a prompt waits for input.
    */
-  constructor({ onEvent, onFingerprint } = {}) {
+  constructor({ onEvent, onFingerprint, onJumpFingerprint, authTimeoutMs } = {}) {
     this.onEvent = onEvent ?? (() => {})
     this.onFingerprint = onFingerprint ?? (() => {})
+    this.onJumpFingerprint = onJumpFingerprint ?? (() => {})
+    this.authTimeoutMs = Number.isFinite(authTimeoutMs) ? authTimeoutMs : 120000
   }
 
   /** Snapshot of every known connection state. */
@@ -129,16 +116,25 @@ export class SshPool {
   }
 
   /**
-   * Resolve a stored host row into ssh2 connection options, following one level
-   * of ssh-config defaults for anything the row left blank.
+   * Resolve one host row (or jump hop) into ssh2 connection options, following
+   * one level of ssh-config defaults for anything the row left blank.
+   *
+   * The credential half lives in `auth.js`, because the jump hop needs exactly
+   * the same rules against a *different* auth object — and because "the target's
+   * password must never be tried on the bastion" is a decision worth having in
+   * one place instead of implied by a `??` in the middle of this method.
+   *
+   * @param {object} host - stored row (or a jump pseudo-row with `fingerprint`).
+   * @param {object} auth - `{type, keyPath, password?, passphrase?}`.
+   * @param {{label?: string, requirePassword?: boolean}} [hop] - error wording and
+   *   whether a missing password is a configuration error.
    */
-  #options(host) {
+  #options(host, auth, { label = '目标机', requirePassword = true } = {}) {
     const config = host.alias === undefined ? undefined : findSshHost(host.alias)
     const address = host.host ?? config?.host ?? host.alias
     if (typeof address !== 'string' || address === '') {
-      throw new RemoteError('bad-host', '缺少主机地址', 400)
+      throw new RemoteError('bad-host', `${label}：缺少主机地址`, 400)
     }
-    const auth = host.auth ?? { type: 'agent' }
     const options = {
       host: address,
       port: Number(host.port ?? config?.port ?? 22),
@@ -147,30 +143,10 @@ export class SshPool {
       keepaliveInterval: 15000,
       keepaliveCountMax: 3,
       hostVerifier: (key) => this.#verifyHost(host, key),
+      ...hopAuth(auth, { config, label, requirePassword }),
     }
     if (typeof options.username !== 'string' || options.username === '') {
-      throw new RemoteError('bad-user', '缺少登录用户名', 400)
-    }
-    if (auth.type === 'key') {
-      const keyPath = expandHome(auth.keyPath ?? config?.identityFile)
-      if (typeof keyPath !== 'string' || keyPath === '') {
-        throw new RemoteError('bad-key', '请指定私钥文件', 400)
-      }
-      try {
-        options.privateKey = readFileSync(keyPath)
-      } catch (error) {
-        throw new RemoteError('key-unreadable', `无法读取私钥 ${keyPath}：${error.message}`, 400)
-      }
-      if (typeof auth.passphrase === 'string' && auth.passphrase !== '') options.passphrase = auth.passphrase
-    } else if (auth.type === 'password') {
-      if (typeof auth.password !== 'string' || auth.password === '') {
-        throw new RemoteError('bad-password', '请输入密码', 400)
-      }
-      options.password = auth.password
-    } else {
-      const agent = agentSocket()
-      if (agent === undefined) throw new RemoteError('no-agent', '未找到 ssh-agent，请改用密钥文件认证', 400)
-      options.agent = agent
+      throw new RemoteError('bad-user', `${label}：缺少登录用户名`, 400)
     }
     return options
   }
@@ -182,43 +158,154 @@ export class SshPool {
       this.onFingerprint(host.id, fingerprint)
       return true
     }
-    if (host.fingerprint === fingerprint) return true
-    return false
+    return host.fingerprint === fingerprint
   }
 
-  /** Connect through a `ProxyJump` chain, at most two hops. */
-  async #openWithJump(host, options, depth) {
-    if (depth > 2) throw new RemoteError('jump-too-deep', 'ProxyJump 嵌套过深', 400)
-    const jumpSpec = host.proxyJump ?? findSshHost(host.alias)?.proxyJump
-    if (typeof jumpSpec !== 'string' || jumpSpec === '') return undefined
-    const jump = jumpSpec.includes('@') ? jumpSpec.slice(jumpSpec.indexOf('@') + 1) : jumpSpec
-    const jumpUser = jumpSpec.includes('@') ? jumpSpec.slice(0, jumpSpec.indexOf('@')) : undefined
-    const jumpHost = {
-      id: `jump:${jump}`,
-      alias: jump,
-      host: jump,
-      user: jumpUser ?? host.user,
-      port: 22,
-      auth: host.jumpAuth ?? host.auth,
+  /**
+   * The jump hop, from `host.jump` (the shape v0.7 will extend into a chain) or
+   * a legacy `proxyJump` string.
+   *
+   * Two rules earn their own branch here:
+   *
+   * - A jump with no explicit `auth` **inherits the method, not the secret**. The
+   *   old code handed the bastion `host.auth` wholesale, so a password-auth host
+   *   tried the *target's* password on the bastion — the reason "密码 + 跳板"
+   *   never worked, and a quiet way to burn `MaxAuthTries` on the wrong machine.
+   * - `ProxyJump a,b` used to be substring-sliced into the hostname `b`, i.e. it
+   *   dialled a machine that does not exist and timed out. Saying "multi-hop is
+   *   not supported yet" is the honest answer until the chain lands.
+   *
+   * @returns {{host: string, port: number, user?: string, auth: object, fingerprint?: string}|undefined}
+   */
+  #jumpOf(host) {
+    const stored = host.jump
+    if (stored !== undefined && stored !== null && typeof stored.host === 'string' && stored.host !== '') {
+      const config = findSshHost(stored.host)
+      const declared = stored.auth
+      const auth = declared === undefined || declared.type === 'inherit'
+        ? { type: host.auth?.type ?? 'agent', keyPath: host.auth?.keyPath }
+        : withSecrets(declared)
+      return {
+        host: config?.host ?? stored.host,
+        port: Number(stored.port ?? config?.port ?? 22),
+        user: stored.user ?? config?.user ?? host.user,
+        auth,
+        fingerprint: stored.fingerprint,
+      }
+    }
+    const spec = host.proxyJump ?? findSshHost(host.alias)?.proxyJump
+    if (typeof spec !== 'string' || spec === '') return undefined
+    const hops = parseJumpChain(spec)
+    if (hops.length === 0) return undefined
+    if (hops.length > 1) {
+      throw new RemoteError(
+        'jump-multi-hop',
+        `ProxyJump 配了 ${hops.length} 跳（${spec}），当前只支持一跳。多跳支持在 v0.7.0 的计划里，眼下请先填第一跳。`,
+        400,
+        { hops: hops.map((hop) => hop.host) },
+      )
+    }
+    const config = findSshHost(hops[0].host)
+    return {
+      host: config?.host ?? hops[0].host,
+      port: Number(hops[0].port ?? config?.port ?? 22),
+      user: hops[0].user ?? config?.user ?? host.user,
+      // Method and key only: a password lives in memory or nowhere, and the
+      // target's is not a candidate for the bastion.
+      auth: { type: host.auth?.type ?? 'agent', keyPath: host.auth?.keyPath, ...secretOf(host.jumpAuth) },
       fingerprint: host.jumpFingerprint,
     }
+  }
+
+  /** TOFU for a jump hop, pinned on the host row rather than on a host of its own. */
+  #verifyJump(host, jump, key) {
+    const fingerprint = fingerprintOf(key)
+    if (jump.fingerprint === undefined || jump.fingerprint === '') {
+      this.onJumpFingerprint(host.id, fingerprint)
+      return true
+    }
+    return jump.fingerprint === fingerprint
+  }
+
+  /**
+   * Connect through the jump hop and hand back a stream that reaches the target.
+   * @returns {Promise<{stream: object, count: number, dispose: () => void}|undefined>}
+   */
+  async #openWithJump(host, options, interactive) {
+    const jump = this.#jumpOf(host)
+    if (jump === undefined) return undefined
+    const config = findSshHost(jump.host)
+    const label = '跳板'
+    const jumpOptions = {
+      host: jump.host,
+      port: jump.port,
+      username: jump.user ?? process.env.USER ?? process.env.USERNAME,
+      readyTimeout: 20000,
+      keepaliveInterval: 15000,
+      keepaliveCountMax: 3,
+      hostVerifier: (key) => this.#verifyJump(host, jump, key),
+      ...hopAuth(jump.auth, { config, label, requirePassword: false }),
+    }
+    if (typeof jumpOptions.username !== 'string' || jumpOptions.username === '') {
+      throw new RemoteError('bad-user', `${label}：缺少登录用户名`, 400)
+    }
     const bastion = new Client()
-    const bastionOptions = this.#options(jumpHost)
+    this.#attachAuth(host, bastion, {
+      hop: 1,
+      label,
+      host: jumpOptions.host,
+      port: jumpOptions.port,
+      user: jumpOptions.username,
+      password: jump.auth?.password,
+      interactive,
+    })
+    const where = `${jumpOptions.username}@${jump.host}:${jump.port}`
     await new Promise((resolve, reject) => {
       bastion.once('ready', resolve)
-      bastion.once('error', (error) => reject(classify(error)))
-      bastion.connect(bastionOptions)
-    }).catch((error) => { throw error })
-    const stream = await call(bastion, 'forwardOut', '127.0.0.1', 0, options.host, options.port)
-    return { stream, dispose: () => bastion.end() }
+      bastion.once('error', (error) => reject(bastion.__authError ?? classify(error)))
+      bastion.connect(jumpOptions)
+    }).catch((error) => {
+      bastion.end()
+      this.#noteGuess(bastion, error)
+      const failure = classify(error)
+      // A bare "Permission denied" from a hop that is not the one the user is
+      // looking at is the least useful message in this whole plugin: name the
+      // hop, and keep the original code so the UI can still offer "改用密码".
+      if (['auth-failed', 'bad-password', 'no-agent', 'key-unreadable', 'key-invalid'].includes(failure.code)) {
+        throw new RemoteError(
+          'jump-auth-failed',
+          `跳板 ${where} 认证失败：${failure.message}`,
+          401,
+          { hop: 1, host: jump.host, port: jump.port, user: jump.user, cause: failure.code },
+        )
+      }
+      throw failure
+    })
+    // Post-handshake drops are the pool's business, not the caller's.
+    bastion.on('error', () => {})
+    const stream = await call(bastion, 'forwardOut', '127.0.0.1', 0, options.host, options.port).catch((error) => {
+      bastion.end()
+      throw new RemoteError(
+        'jump-forward-failed',
+        `跳板 ${where} 无法开通到 ${options.host}:${options.port} 的通道：${error.message}`,
+        502,
+        { hop: 1, host: jump.host },
+      )
+    })
+    return { stream, count: 1, dispose: () => bastion.end() }
   }
 
   /**
    * Ensure a live client for one host, connecting when needed.
    * @param {object} host - stored host row (`{id, host, port, user, auth, alias, fingerprint}`).
+   * @param {{interactive?: boolean}} [options] - `interactive` allows a prompt to
+   *   be put on screen when the server asks for something we do not hold (a TOTP
+   *   code, or a bastion password). Only the connect gate sets it: a background
+   *   heal has nobody to ask, and must fail with `needs-credential` instead of
+   *   sitting on a dialog nobody sees.
    * @returns {Promise<Client>} a ready client.
    */
-  async ensure(host) {
+  async ensure(host, { interactive = false } = {}) {
     const existing = this.#records.get(host.id)
     if (existing?.status === 'connected' && existing.client !== undefined) return existing.client
     if (existing?.status === 'connecting' && existing.pending !== undefined) return existing.pending
@@ -230,8 +317,9 @@ export class SshPool {
     // already written `connecting` + that dead promise. Every later attempt —
     // password on the wire and all — was answered by replaying the rejection
     // ("请输入密码"), and the status bar sat on 连接中 forever.
-    const options = this.#options(this.#withSecret(host))
-    const pending = this.#connect(host, options)
+    const resolved = this.#withSecret(host)
+    const options = this.#options(resolved, resolved.auth)
+    const pending = this.#connect(host, resolved, options, { interactive })
     this.#records.set(host.id, { hostId: host.id, status: 'connecting', client: undefined, pending })
     this.#setStatus(host.id, 'connecting')
     return pending
@@ -241,25 +329,200 @@ export class SshPool {
    * Host row with the in-memory secret merged in: a re-connect after a network
    * drop arrives without the password (the row never stores one), so the
    * remembered credential fills the gap. Nothing here touches the state file.
+   *
+   * Jump secrets live under `jumpPassword` / `jumpPassphrase` so one map can hold
+   * both hops without the target's password ever landing on the bastion.
    */
   #withSecret(host) {
     const remembered = this.#secrets.get(host.id)
     if (remembered === undefined) return host
-    return { ...host, auth: { ...(host.auth ?? { type: 'agent' }), ...remembered } }
+    const auth = { ...(host.auth ?? { type: 'agent' }) }
+    if (remembered.password !== undefined) auth.password = remembered.password
+    if (remembered.passphrase !== undefined) auth.passphrase = remembered.passphrase
+    let { jump } = host
+    if (jump !== undefined && (remembered.jumpPassword !== undefined || remembered.jumpPassphrase !== undefined)) {
+      const jumpAuth = { ...(jump.auth ?? {}) }
+      if (remembered.jumpPassword !== undefined) jumpAuth.password = remembered.jumpPassword
+      if (remembered.jumpPassphrase !== undefined) jumpAuth.passphrase = remembered.jumpPassphrase
+      jump = { ...jump, auth: jumpAuth }
+    }
+    return { ...host, auth, jump }
   }
 
-  async #connect(host, options) {
+  /**
+   * Wire the server's interactive questions onto the panel.
+   *
+   * ssh2 asks for these *inside* `connect()`, so the only way to answer is to
+   * leave the handshake open and reply when a person has typed. Everything the
+   * password can cover is answered here without a dialog; only the leftovers
+   * (an OTP code, a bastion password we never stored) become a challenge.
+   */
+  #attachAuth(host, client, hop) {
+    client.on('keyboard-interactive', (name, instructions, _lang, prompts, finish) => {
+      const reply = (answers) => {
+        try {
+          finish(answers)
+        } catch {
+          // The channel died while we were asking (timeout, cancel, network).
+          // ssh2 throws from `finish` in that case and there is nothing to do.
+        }
+      }
+      // First ask for a hop may fill the password into an unnamed hidden prompt;
+      // once that guess has been rejected, the next attempt asks instead of
+      // repeating it (ssh2 never retries a method inside one handshake, so the
+      // retry is necessarily a new connection).
+      const guessKey = `${host.id}#${hop.hop}`
+      const mayGuess = !this.#guessed.has(guessKey)
+      const { answers, ask } = planPrompts(prompts, mayGuess ? hop.password : undefined)
+      if (ask.length === 0) {
+        if (mayGuess && answers.some((answer) => answer !== '')) client.__guessed = guessKey
+        reply(answers)
+        return
+      }
+      void this.#askAuth(host, hop, { name, instructions, prompts: ask })
+        .then((typed) => {
+          ask.forEach((slot, index) => { answers[slot.index] = typed[index] ?? '' })
+          reply(answers)
+        })
+        .catch((error) => {
+          // Let the handshake fail on its own terms, then report the real reason
+          // instead of the generic "all methods failed" ssh2 produces.
+          client.__authError = error
+          reply(answers)
+        })
+    })
+  }
+
+  /**
+   * Remember that this hop's one allowed guess was wrong, so the next attempt
+   * asks a person instead of trying the same password again.
+   */
+  #noteGuess(client, error) {
+    if (client.__guessed === undefined) return
+    const failure = error instanceof RemoteError ? error : classify(error)
+    if (failure.code === 'auth-failed' || failure.code === 'jump-auth-failed') {
+      this.#guessed.add(client.__guessed)
+    }
+  }
+
+  /**
+   * Put a prompt on screen and wait for it.
+   * @returns {Promise<string[]>} one answer per prompt, in order.
+   */
+  #askAuth(host, hop, { name, instructions, prompts }) {
+    if (hop.interactive !== true) {
+      const asked = prompts.map((item) => item.prompt.trim()).filter(Boolean).join(' / ') || '密码'
+      return Promise.reject(new RemoteError(
+        'needs-credential',
+        `${hop.label}需要交互式认证（${asked}），但这次连接是后台发起的，没有可以输入的界面；请回到面板手动连接一次`,
+        401,
+        { hop: hop.hop, host: hop.host, port: hop.port, user: hop.user, prompts },
+      ))
+    }
+    if (this.#challenge !== undefined) {
+      return Promise.reject(new RemoteError('auth-busy', '还有一个待输入的认证请求，请先完成它', 409))
+    }
+    const id = nextId('auth')
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (this.#challenge?.id !== id) return
+        this.#challenge = undefined
+        reject(new RemoteError('auth-timeout', '认证输入超时（120 秒），已放弃这次连接', 504, { hop: hop.hop }))
+      }, this.authTimeoutMs)
+      timer.unref?.()
+      this.#challenge = {
+        id,
+        hostId: host.id,
+        hop: hop.hop,
+        hopLabel: hop.label,
+        host: hop.host,
+        port: hop.port,
+        user: hop.user,
+        name,
+        instructions,
+        prompts,
+        resolve,
+        reject,
+        timer,
+        expiresAt: Date.now() + this.authTimeoutMs,
+      }
+    })
+  }
+
+  /**
+   * The prompt waiting for input, or `undefined`.
+   *
+   * Returned without any secret: the panel renders these boxes itself, and the
+   * password it already typed is still in its own state.
+   * @param {string} [hostId] - only report a prompt belonging to this host.
+   */
+  challenge(hostId) {
+    const pending = this.#challenge
+    if (pending === undefined) return undefined
+    if (typeof hostId === 'string' && hostId !== '' && pending.hostId !== hostId) return undefined
+    return {
+      id: pending.id,
+      hostId: pending.hostId,
+      hop: pending.hop,
+      hopLabel: pending.hopLabel,
+      host: pending.host,
+      port: pending.port,
+      user: pending.user,
+      name: pending.name,
+      instructions: pending.instructions,
+      prompts: pending.prompts.map(({ prompt, echo }) => ({ prompt, echo })),
+      expiresAt: pending.expiresAt,
+    }
+  }
+
+  /**
+   * Answer the pending prompt, which lets the waiting handshake continue.
+   * @param {string} id - the challenge id the panel was shown.
+   * @param {string[]} answers - one per prompt, in the shown order.
+   */
+  answerAuth(id, answers) {
+    const pending = this.#challenge
+    if (pending === undefined || pending.id !== id) {
+      throw new RemoteError('challenge-stale', '这条认证请求已经失效，请重新连接', 409)
+    }
+    clearTimeout(pending.timer)
+    this.#challenge = undefined
+    const list = Array.isArray(answers) ? answers.map((value) => String(value ?? '')) : []
+    pending.resolve(list)
+    return { ok: true }
+  }
+
+  /** Drop the pending prompt (disconnect, teardown, or a failed attempt). */
+  #cancelChallenge(hostId) {
+    const pending = this.#challenge
+    if (pending === undefined) return
+    if (hostId !== undefined && pending.hostId !== hostId) return
+    clearTimeout(pending.timer)
+    this.#challenge = undefined
+    pending.reject(new RemoteError('auth-cancelled', '连接已取消', 499))
+  }
+
+  async #connect(host, resolved, options, { interactive }) {
     const client = new Client()
     const record = () => this.#records.get(host.id)
     try {
-      const jump = await this.#openWithJump(host, options, 0).catch((error) => { throw error })
+      const jump = await this.#openWithJump(resolved, options, interactive)
       if (jump !== undefined) {
         options.sock = jump.stream
         client.__jump = jump
       }
+      this.#attachAuth(host, client, {
+        hop: (jump?.count ?? 0) + 1,
+        label: '目标机',
+        host: options.host,
+        port: options.port,
+        user: options.username,
+        password: resolved.auth?.password,
+        interactive,
+      })
       await new Promise((resolve, reject) => {
         client.once('ready', resolve)
-        client.once('error', (error) => reject(classify(error)))
+        client.once('error', (error) => reject(client.__authError ?? classify(error)))
         client.connect(options)
       })
       client.on('error', (error) => {
@@ -288,7 +551,8 @@ export class SshPool {
         this.#records.set(host.id, { hostId: host.id, status: 'connected', client, since: Date.now() })
       }
       this.onEvent({ hostId: host.id, status: 'connected' })
-      this.#remember(host.id, options)
+      if (client.__guessed !== undefined) this.#guessed.delete(client.__guessed)
+      this.#remember(host.id, resolved)
       // Reverse forwards must be re-requested on every fresh connection — the
       // server dropped those ports when the previous one closed. Awaited so the
       // caller never observes a "connected" host whose `-R` rules are not
@@ -297,17 +561,27 @@ export class SshPool {
       return client
     } catch (error) {
       client.__jump?.dispose?.()
+      this.#noteGuess(client, error)
+      this.#cancelChallenge(host.id)
       this.#records.set(host.id, { hostId: host.id, status: 'error', error: error.message })
       this.onEvent({ hostId: host.id, status: 'error', error: error.message })
       throw error instanceof RemoteError ? error : classify(error)
     }
   }
 
-  /** Keep the credentials of a successful connection in memory (never on disk). */
-  #remember(hostId, options) {
-    const secret = {}
-    if (typeof options.password === 'string' && options.password !== '') secret.password = options.password
-    if (typeof options.passphrase === 'string' && options.passphrase !== '') secret.passphrase = options.passphrase
+  /**
+   * Keep the credentials of a successful connection in memory (never on disk).
+   *
+   * Only the *declared* credentials are remembered: a password typed into a
+   * prompt is not, because a keyboard-interactive reply has no label saying
+   * which prompt was the password and which was the OTP. Storing the OTP would
+   * be worse than useless 30 seconds later.
+   */
+  #remember(hostId, resolved) {
+    const secret = secretOf(resolved.auth)
+    const jumpSecret = resolved.jump?.auth === undefined ? {} : secretOf(resolved.jump.auth)
+    if (jumpSecret.password !== undefined) secret.jumpPassword = jumpSecret.password
+    if (jumpSecret.passphrase !== undefined) secret.jumpPassphrase = jumpSecret.passphrase
     if (Object.keys(secret).length === 0) this.#secrets.delete(hostId)
     else this.#secrets.set(hostId, secret)
   }
@@ -315,6 +589,7 @@ export class SshPool {
   /** Drop a client and forget its credentials (an explicit disconnect). */
   close(hostId) {
     const record = this.#records.get(hostId)
+    this.#cancelChallenge(hostId)
     this.#secrets.delete(hostId)
     // Registrations die with the connection they belonged to; keeping them would
     // silently re-open server ports on the next connect without the user asking.
@@ -453,6 +728,7 @@ export class SshPool {
 
   /** Close every connection (plugin unload). */
   dispose() {
+    this.#cancelChallenge()
     for (const hostId of [...this.#records.keys()]) this.close(hostId)
     this.#records.clear()
     this.#secrets.clear()
