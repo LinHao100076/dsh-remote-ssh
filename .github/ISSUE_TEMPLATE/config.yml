@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 安全漏洞（走私密渠道）
-    url: https://github.com/LinHao100076/dsh-ssh-remote/security/advisories/new
+    url: https://github.com/LinHao100076/dsh-remote-ssh/security/advisories/new
     about: 涉及凭据、文件越权、转发暴露的问题请走这里，不要开 public issue。
   - name: 想先读懂设计
-    url: https://github.com/LinHao100076/dsh-ssh-remote/blob/main/docs/design.md
+    url: https://github.com/LinHao100076/dsh-remote-ssh/blob/main/docs/design.md
     about: 架构取舍、为什么不做某件事、已知坑，都在这份文档里。

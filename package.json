@@ -16,13 +16,13 @@
     "socks5",
     "tunnel"
   ],
-  "homepage": "https://github.com/LinHao100076/dsh-ssh-remote#readme",
+  "homepage": "https://github.com/LinHao100076/dsh-remote-ssh#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/LinHao100076/dsh-ssh-remote.git"
+    "url": "git+https://github.com/LinHao100076/dsh-remote-ssh.git"
   },
   "bugs": {
-    "url": "https://github.com/LinHao100076/dsh-ssh-remote/issues"
+    "url": "https://github.com/LinHao100076/dsh-remote-ssh/issues"
   },
   "author": "LinHao100076",
   "type": "module",

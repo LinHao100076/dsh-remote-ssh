@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        提之前建议先扫一眼 [ROADMAP.md](https://github.com/LinHao100076/dsh-ssh-remote/blob/main/ROADMAP.md)：里面列了已经在队列里的，和明确不做的。
+        提之前建议先扫一眼 [ROADMAP.md](https://github.com/LinHao100076/dsh-remote-ssh/blob/main/ROADMAP.md)：里面列了已经在队列里的，和明确不做的。
 
   - type: textarea
     id: scenario
