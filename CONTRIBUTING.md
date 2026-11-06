@@ -60,7 +60,7 @@ git merge --no-ff feat/<短横线名字>       # 合回 main
 
 ## 测试要求
 
-`npm test` 十三轮必须全绿。新增能力请配一个 `test/<名字>.mjs`，并把它加进 `package.json` 的 `scripts.test` 与 README 的测试表。
+`npm test` 十五轮必须全绿。新增能力请配一个 `test/<名字>.mjs`，并把它加进 `package.json` 的 `scripts.test` 与 README 的测试表。
 
 这个仓库对测试有一条底线：**关键协议不许打桩替代。** 具体说：
 
@@ -77,6 +77,18 @@ git merge --no-ff feat/<短横线名字>       # 合回 main
 - [ ] 改了界面的，`ui/prototype.html` 一起改
 - [ ] 改了用户可见行为的，`README.md` 与 `CHANGELOG.md` 的 `未发布` 段落一起更新
 - [ ] 有破坏性变更（规则模型、状态文件格式、API 形状）的，在 PR 描述里单独列出来，并说明旧数据怎么迁移
+
+## 发版
+
+版本号在 `package.json` 与 `src/index.js` 的 `VERSION` 两处，`npm version <x.y.z> --no-git-tag-version` 只改前者，后者要手工跟。
+
+1. `npm run pack:rel` → `dist/dsh-remote-ssh-<版本>.tgz`（`prepack` 会自动重建 `lib/`；产物必须和源码同步，CI 会校验）
+2. 打标签 `v<x.y.z>` 并推送，按 CHANGELOG 写 Release 说明
+3. **同一个 tgz 用两个名字上传到该 Release**：
+   - `dsh-remote-ssh-<x.y.z>.tgz` —— 带版本号，文档与手工安装都指它
+   - `dsh-remote-ssh.tgz` —— 不带版本号，给 `releases/latest/download/dsh-remote-ssh.tgz` 用
+
+第 3 条的第二个名字看起来多余，但它是唯一能让外部链接长期有效的写法：`latest/download/` 在请求时才解析 `latest`，但**文件名是字面匹配**的。只上传带版本号的名字，`latest/download/dsh-remote-ssh.tgz` 今天能下、你发下一版立刻 404 —— 而那个链接写在插件市场的条目里，不会有人回来改。反过来只上传不带版本号的名字，README 里「选哪个文件」这句话就没有确切文件名了。两个都传，两边都不用维护。
 
 ## 不打算做的事
 
