@@ -283,6 +283,7 @@
   }
   .field input:focus, .field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
   .grid2 { display: grid; grid-template-columns: 1fr 88px; gap: 8px; }
+  .grid2.wide { grid-template-columns: 1fr 132px; }
   .switch { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--line); }
   .switch:last-child { border-bottom: 0; }
   .switch .lbl { font-size: 12px; color: var(--fg-dim); }
@@ -342,10 +343,6 @@
   .jstat.bad { color: var(--red); }
   .jrail { height: 16px; margin-left: 18px; border-left: 1px dashed var(--line-2); position: relative; }
   .jrail span { position: absolute; left: 7px; top: 0; font-size: 9.5px; color: var(--fg-mute); font-family: var(--mono); }
-  .jsummary {
-    display: flex; align-items: center; gap: 7px; padding: 5px 8px;
-    border: 1px solid var(--line-2); border-radius: 7px; background: var(--surface);
-  }
   .jnote { font-size: 10.5px; color: var(--fg-mute); line-height: 1.6; margin: 0 2px 10px; display: block; }
   .jnote code { font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim); background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
   .hop { border: 1px solid var(--line); border-radius: 9px; margin-bottom: 8px; overflow: hidden; background: var(--panel); }
@@ -367,6 +364,34 @@
   .chip.ok { background: var(--green-soft); color: var(--green); }
   .chip.warn { background: var(--amber-soft); color: var(--amber); }
   .chip.acc { background: var(--accent-soft); color: var(--accent); }
+
+  /* ── 新建连接 / 认证 ───────────────────────────────────── */
+  .authpart[hidden], .jumpbody[hidden], .jumpsum[hidden] { display: none; }
+  .actrow { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .hintline { display: block; font-size: 10.5px; color: var(--fg-mute); line-height: 1.6; }
+  .hintline .ic { display: inline-block; vertical-align: -2px; margin-right: 3px; }
+  .hintline .chip { vertical-align: -4px; margin-right: 4px; }
+  .authprompt {
+    width: 100%; text-align: left; margin-bottom: 12px; padding: 11px;
+    border: 1px solid color-mix(in srgb, var(--amber) 30%, var(--line));
+    background: var(--amber-soft); border-radius: 9px;
+  }
+  .authprompt .t { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--amber); margin-bottom: 4px; }
+  .authprompt p { margin: 0 0 9px; max-width: none; font-size: 11px; line-height: 1.6; color: var(--fg-dim); }
+  .authprompt .field input { background: var(--panel); }
+  .authprompt .switch { padding: 4px 0 0; border-bottom: 0; }
+  .authprompt .sw { flex: none; }
+
+  /* ── 跳板编辑块（新建与设置共用） ───────────────────────── */
+  .jumpsum {
+    display: flex; align-items: center; gap: 7px; padding: 7px 9px; margin-bottom: 10px;
+    border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface);
+  }
+  .hop.flash { animation: flash 1.4s ease-out; }
+  @keyframes flash {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    18% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--red) 42%, transparent); }
+  }
 
   /* ── toast ─────────────────────────────────────────────── */
   .toast {
@@ -419,12 +444,12 @@
   </div>
   <div class="views" role="tablist" aria-label="界面状态">
     <button role="tab" data-view="connect">连接页</button>
+    <button role="tab" data-view="new">新建连接</button>
     <button role="tab" data-view="connecting">连接中</button>
     <button role="tab" data-view="files" aria-selected="true">文件</button>
     <button role="tab" data-view="terminal">终端</button>
     <button role="tab" data-view="sync">同步</button>
     <button role="tab" data-view="settings">设置</button>
-    <button role="tab" data-view="jump">跳板</button>
     <button role="tab" data-view="error">错误</button>
   </div>
   <button class="icon-btn" id="themeBtn" title="切换主题"><svg class="ic"><use href="#i-moon"/></svg></button>
@@ -494,12 +519,66 @@
             </button>
             <button class="hitem" onclick="setView('connecting')">
               <svg class="ic" style="color:var(--fg-mute)"><use href="#i-server"/></svg>
-              <div><div class="nm">staging</div><div class="ad">deploy@staging.internal</div></div>
+              <div><div class="nm">staging</div><div class="ad">deploy@staging.internal · <span style="color:var(--amber)">密码登录</span></div></div>
               <span class="r"><svg class="ic"><use href="#i-chev"/></svg></span>
             </button>
           </div>
-          <button class="btn primary" onclick="setView('connecting')"><svg class="ic"><use href="#i-plus"/></svg>新建 SSH 连接</button>
+          <button class="btn primary" onclick="setView('new')"><svg class="ic"><use href="#i-plus"/></svg>新建 SSH 连接</button>
           <div class="hint" style="margin-top:12px"><svg class="ic" style="width:11px;height:11px"><use href="#i-link"/></svg>已从 ssh config 读取 3 个 Host</div>
+          <div class="hint" style="margin-top:6px">新建时直接配跳板链路与认证方式（密钥 / 密码 / agent）</div>
+        </div>
+      </section>
+
+      <!-- ───── 新建连接 ───── -->
+      <section class="pane" data-pane="new">
+        <div class="scroll">
+          <div class="sect">目标机</div>
+          <div class="form">
+            <div class="field"><label>名称</label><input value="staging-2" data-tf="name" oninput="targetInput(this)" /></div>
+            <div class="grid2">
+              <div class="field"><label>主机</label><input value="10.0.3.30" data-tf="host" oninput="targetInput(this)" /></div>
+              <div class="field"><label>端口</label><input value="22" data-tf="port" oninput="targetInput(this)" /></div>
+            </div>
+            <div class="grid2 wide">
+              <div class="field"><label>用户</label><input value="deploy" data-tf="user" oninput="targetInput(this)" /></div>
+              <div class="field"><label>认证方式</label>
+                <select onchange="authChanged(this)">
+                  <option value="key">密钥文件</option>
+                  <option value="pass" selected>密码</option>
+                  <option value="agent">ssh-agent</option>
+                  <option value="kbd">键盘交互（2FA）</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="authpart" data-auth="key" hidden>
+              <div class="field"><label>私钥</label><input value="~/.ssh/id_ed25519" /></div>
+            </div>
+
+            <div class="authpart" data-auth="pass">
+              <div class="field"><label>密码</label><input type="password" placeholder="可以不填 —— 连接时再输" /></div>
+              <div class="hintline" style="margin-top:6px">
+                <svg class="ic" style="width:11px;height:11px"><use href="#i-lock"/></svg>
+                密码不写进配置文件：留着空，连接时在这一步输一次；填了也只活到这次会话结束。
+              </div>
+            </div>
+
+            <div class="authpart" data-auth="agent" hidden>
+              <div class="hintline">用本机 ssh-agent 里的钥匙。Windows 要先让 OpenSSH Authentication Agent 服务跑起来。</div>
+            </div>
+
+            <div class="authpart" data-auth="kbd" hidden>
+              <div class="jnote" style="margin:0">连接时按服务器提示弹输入：密码、验证码、二次确认都走这条。密钥 + OTP 的组合也选它。</div>
+            </div>
+          </div>
+
+          <div class="sect">跳板链路 <span class="chip" style="text-transform:none;letter-spacing:0">可选</span></div>
+          <div id="jumpNew"></div>
+
+          <div style="display:flex;gap:8px;margin:14px 0 20px">
+            <button class="btn primary" style="flex:1" onclick="setView('connecting')">保存并连接</button>
+            <button class="btn" onclick="toast('已保存，稍后可在连接页点开')">仅保存</button>
+          </div>
         </div>
       </section>
 
@@ -513,10 +592,28 @@
             <div class="step done"><span class="mark"><svg class="ic" style="width:9px;height:9px;stroke-width:3"><use href="#i-check"/></svg></span>解析 ssh config<span class="ms">2ms</span></div>
             <div class="step done"><span class="mark"><svg class="ic" style="width:9px;height:9px;stroke-width:3"><use href="#i-check"/></svg></span>第 1 跳 bastion-a:22 · 密钥<span class="ms">8ms</span></div>
             <div class="step done"><span class="mark"><svg class="ic" style="width:9px;height:9px;stroke-width:3"><use href="#i-check"/></svg></span>第 2 跳 bastion-b:2222 · agent<span class="ms">11ms</span></div>
-            <div class="step now"><span class="mark"></span>第 2 跳 → 10.0.3.21:22 开 direct-tcpip</div>
-            <div class="step"><span class="mark"></span>认证 prod-web-01 并校验主机指纹</div>
+            <div class="step done"><span class="mark"><svg class="ic" style="width:9px;height:9px;stroke-width:3"><use href="#i-check"/></svg></span>第 2 跳 → 10.0.3.21:22 开 direct-tcpip<span class="ms">6ms</span></div>
+            <div class="step now"><span class="mark"></span>认证 prod-web-01 · 密码</div>
+          </div>
+
+          <div class="authprompt">
+            <div class="t"><svg class="ic" style="width:12px;height:12px"><use href="#i-lock"/></svg>prod-web-01 只接受密码</div>
+            <p>服务器没开 publickey，或你的公钥不在 authorized_keys 里。密码只用于这一次握手，不会写进配置文件。</p>
+            <div class="field"><label>ubuntu@10.0.3.21 的密码</label><input type="password" placeholder="输入后回车继续" /></div>
+            <div class="switch">
+              <div><div class="lbl">记住密码</div><div class="sub">v0.7.0 计划：存进系统钥匙串；现在只活到本次会话</div></div>
+              <button class="sw" aria-checked="false" onclick="toggleSw(this)"></button>
+            </div>
+            <div class="actrow">
+              <button class="btn primary sm" onclick="setView('files')">继续连接</button>
+              <button class="btn sm ghost" onclick="toast('已改用 ssh-agent —— 前提是目标机里有你的一把公钥')">改用 ssh-agent</button>
+            </div>
+          </div>
+
+          <div class="steps">
             <div class="step"><span class="mark"></span>探测远端环境 / 挂载 /srv/app</div>
           </div>
+          <div class="hint" style="margin-bottom:8px">跳板各跳的密码按顺序问：第 1 跳 → 第 2 跳 → 目标，每跳一格</div>
           <button class="btn ghost sm" onclick="setView('files')">跳过动画</button>
         </div>
       </section>
@@ -699,27 +796,43 @@
         <div class="scroll">
           <div class="sect">连接</div>
           <div class="form">
-            <div class="field"><label>名称</label><input value="prod-web-01" /></div>
+            <div class="field"><label>名称</label><input value="prod-web-01" data-tf="name" oninput="targetInput(this)" /></div>
             <div class="grid2">
-              <div class="field"><label>主机</label><input value="10.0.3.21" /></div>
-              <div class="field"><label>端口</label><input value="22" /></div>
+              <div class="field"><label>主机</label><input value="10.0.3.21" data-tf="host" oninput="targetInput(this)" /></div>
+              <div class="field"><label>端口</label><input value="22" data-tf="port" oninput="targetInput(this)" /></div>
             </div>
-            <div class="grid2">
-              <div class="field"><label>用户</label><input value="ubuntu" /></div>
-              <div class="field"><label>认证</label>
-                <select><option>密钥文件</option><option>ssh-agent</option><option>密码</option></select>
+            <div class="grid2 wide">
+              <div class="field"><label>用户</label><input value="ubuntu" data-tf="user" oninput="targetInput(this)" /></div>
+              <div class="field"><label>认证方式</label>
+                <select onchange="authChanged(this)">
+                  <option value="key" selected>密钥文件</option>
+                  <option value="pass">密码</option>
+                  <option value="agent">ssh-agent</option>
+                  <option value="kbd">键盘交互（2FA）</option>
+                </select>
               </div>
             </div>
-            <div class="field"><label>私钥</label><input value="~/.ssh/id_ed25519" /></div>
-            <div class="field">
-              <label>跳板链路</label>
-              <div class="jsummary">
-                <span class="chip acc">2 跳</span>
-                <span class="jsub" style="flex:1">bastion-a:22 → bastion-b:2222</span>
-                <button class="btn sm" onclick="setView('jump')">编辑</button>
-              </div>
+
+            <div class="authpart" data-auth="key">
+              <div class="field"><label>私钥</label><input value="~/.ssh/id_ed25519" /></div>
+            </div>
+
+            <div class="authpart" data-auth="pass" hidden>
+              <div class="field"><label>密码</label><input type="password" value="" placeholder="连接时输入，不写入磁盘" /></div>
+              <div class="hintline" style="margin-top:6px"><span class="chip">仅本次会话</span>密码只留在内存里，断开就清掉；下次连接再输一次</div>
+            </div>
+
+            <div class="authpart" data-auth="agent" hidden>
+              <div class="hintline">用本机 ssh-agent 里的钥匙。Windows 要先让 OpenSSH Authentication Agent 服务跑起来。</div>
+            </div>
+
+            <div class="authpart" data-auth="kbd" hidden>
+              <div class="jnote" style="margin:0">连接时按服务器提示弹输入（密码 / 验证码 / 二次确认）。</div>
             </div>
           </div>
+
+          <div class="sect">跳板链路</div>
+          <div id="jumpEdit"></div>
 
           <div class="sect">路径映射</div>
           <div class="card" style="margin-bottom:6px">
@@ -755,142 +868,6 @@
         </div>
       </section>
 
-      <!-- ───── 跳板 ───── -->
-      <section class="pane" data-pane="jump">
-        <div class="scroll">
-
-          <div class="card" style="margin-bottom:10px">
-            <div class="card-h">
-              <svg class="ic"><use href="#i-link"/></svg><b>链路</b>
-              <span style="margin-left:auto">本机 → 2 跳 → prod-web-01</span>
-            </div>
-            <div class="card-b">
-              <div class="jchain">
-                <div class="jnode local" data-jnode>
-                  <span class="jnum"><svg class="ic" style="width:10px;height:10px"><use href="#i-term"/></svg></span>
-                  <div class="jtxt">
-                    <div class="jnm">本机</div>
-                    <div class="jsub">DSH 进程发起 · 不需要能直连目标网段</div>
-                  </div>
-                  <span class="jstat">—</span>
-                </div>
-                <div class="jrail"><span>direct-tcpip ↓</span></div>
-                <div class="jnode" data-jnode>
-                  <span class="jnum">1</span>
-                  <div class="jtxt">
-                    <div class="jnm">bastion-a</div>
-                    <div class="jsub">jump@10.0.0.5:22 · 密钥</div>
-                  </div>
-                  <span class="jstat">—</span>
-                </div>
-                <div class="jrail"><span>direct-tcpip ↓</span></div>
-                <div class="jnode" data-jnode>
-                  <span class="jnum">2</span>
-                  <div class="jtxt">
-                    <div class="jnm">bastion-b</div>
-                    <div class="jsub">ops@10.0.0.9:2222 · ssh-agent</div>
-                  </div>
-                  <span class="jstat">—</span>
-                </div>
-                <div class="jrail"><span>direct-tcpip ↓</span></div>
-                <div class="jnode goal" data-jnode>
-                  <span class="jnum">◎</span>
-                  <div class="jtxt">
-                    <div class="jnm">prod-web-01<span class="chip acc">目标</span></div>
-                    <div class="jsub">ubuntu@10.0.3.21:22 · 密钥</div>
-                  </div>
-                  <span class="jstat">—</span>
-                </div>
-              </div>
-              <div style="display:flex;gap:6px;margin-top:10px">
-                <button class="btn primary sm" onclick="testChain()"><svg class="ic"><use href="#i-refresh"/></svg>测试整条链路</button>
-                <button class="btn sm" onclick="toast('已按 ssh config 的 ProxyJump 重建链路')">从 ssh config 导入</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="jnote">
-            每一跳都要能开 <code>direct-tcpip</code>（就是 <code>ssh -W</code> 干的事）。开不了的那一跳会被指名，而不是笼统一句「连接超时」。
-          </div>
-
-          <div class="sect">每一跳</div>
-
-          <div class="hop">
-            <div class="hop-head open" onclick="toggleHop(this)">
-              <span class="hop-no">1</span>
-              <div class="jtxt">
-                <div class="jnm">bastion-a</div>
-                <div class="jsub">10.0.0.5:22 · 密钥 id_ed25519</div>
-              </div>
-              <span class="hop-acts">
-                <button class="act" title="跟下一跳换位置" onclick="event.stopPropagation();hopMove(this,1)"><svg class="ic" style="width:12px;height:12px"><use href="#i-down"/></svg></button>
-                <button class="act" title="删掉这一跳" onclick="event.stopPropagation();hopRemove(this)"><svg class="ic" style="width:12px;height:12px"><use href="#i-x"/></svg></button>
-              </span>
-              <svg class="ic chev" style="width:12px;height:12px"><use href="#i-chev"/></svg>
-            </div>
-            <div class="hop-body">
-              <div class="grid2">
-                <div class="field"><label>主机</label><input value="10.0.0.5" /></div>
-                <div class="field"><label>端口</label><input value="22" /></div>
-              </div>
-              <div class="grid2">
-                <div class="field"><label>用户</label><input value="jump" /></div>
-                <div class="field"><label>认证</label>
-                  <select><option>密钥文件</option><option>ssh-agent</option><option>密码</option><option>复用目标机凭据</option></select>
-                </div>
-              </div>
-              <div class="field"><label>私钥</label><input value="~/.ssh/id_ed25519" /></div>
-              <div class="hint" style="justify-content:flex-start;gap:6px">
-                <span class="chip ok">指纹已钉住</span>
-                <span style="font-family:var(--mono)">SHA256:9x2f…7ab</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="hop">
-            <div class="hop-head" onclick="toggleHop(this)">
-              <span class="hop-no">2</span>
-              <div class="jtxt">
-                <div class="jnm">bastion-b</div>
-                <div class="jsub">10.0.0.9:2222 · ssh-agent</div>
-              </div>
-              <span class="hop-acts">
-                <button class="act" title="跟上一跳换位置" onclick="event.stopPropagation();hopMove(this,-1)"><svg class="ic" style="width:12px;height:12px"><use href="#i-up"/></svg></button>
-                <button class="act" title="删掉这一跳" onclick="event.stopPropagation();hopRemove(this)"><svg class="ic" style="width:12px;height:12px"><use href="#i-x"/></svg></button>
-              </span>
-              <svg class="ic chev" style="width:12px;height:12px"><use href="#i-chev"/></svg>
-            </div>
-            <div class="hop-body" hidden>
-              <div class="grid2">
-                <div class="field"><label>主机</label><input value="10.0.0.9" /></div>
-                <div class="field"><label>端口</label><input value="2222" /></div>
-              </div>
-              <div class="grid2">
-                <div class="field"><label>用户</label><input value="ops" /></div>
-                <div class="field"><label>认证</label>
-                  <select><option>ssh-agent</option><option>密钥文件</option><option>密码</option><option>复用目标机凭据</option></select>
-                </div>
-              </div>
-              <div class="hint" style="justify-content:flex-start;gap:6px">
-                <span class="chip ok">端口 2222</span>
-                <span>不是 22 —— 端口按跳单独填，不再写死</span>
-              </div>
-            </div>
-          </div>
-
-          <button class="btn sm" style="margin-bottom:10px" onclick="addHop()"><svg class="ic"><use href="#i-plus"/></svg>再加一跳</button>
-
-          <div class="conflict" style="margin-top:4px">
-            <div class="conflict-h"><svg class="ic" style="width:12px;height:12px"><use href="#i-warn"/></svg>第 1 跳在复用目标机凭据</div>
-            <p>旧版单跳 <code style="font-family:var(--mono)">proxyJump</code> 迁过来就是这样：跳板用你的账号和密钥。跳板通常账号不同，建议拆开。</p>
-            <div class="acts">
-              <button class="btn sm" onclick="toast('第 1 跳已改为独立凭据，下次连接生效')">改成独立凭据</button>
-              <button class="btn sm ghost" onclick="this.closest('.conflict').remove()">知道了</button>
-            </div>
-          </div>
-        </div>
-      </section>
-
       <!-- ───── 错误 ───── -->
       <section class="pane" data-pane="error">
         <div class="center">
@@ -906,8 +883,12 @@
             <div class="t"><svg class="ic" style="width:12px;height:12px"><use href="#i-warn"/></svg>hop 2 / 2 · Permission denied (publickey)</div>
             <code>10.0.0.9:2222 · ops · agent 里没有它认的密钥</code>
           </div>
+          <div class="hintline" style="width:100%;margin:0 0 12px;text-align:left">
+            <svg class="ic" style="width:11px;height:11px"><use href="#i-lock"/></svg>
+            这一跳只认密码的话，把它的认证方式改成「密码」即可 —— 不用去动目标机的密钥。
+          </div>
           <div style="display:flex;gap:6px;width:100%">
-            <button class="btn primary" style="flex:1" onclick="setView('jump')">去改这一跳</button>
+            <button class="btn primary" style="flex:1" onclick="gotoHop(2)">去改这一跳</button>
             <button class="btn" style="flex:1" onclick="setView('connecting')">重试</button>
             <button class="btn ghost" onclick="toast('诊断日志：hop1 ok 8ms · hop2 denied · target 未开始')">日志</button>
           </div>
@@ -937,20 +918,28 @@
 
   /* 顶部状态切换 */
   function setView(name) {
+    /* 旧的 ?view=jump 还留着：跳板已经不是独立页面了，直接落到设置的展开态 */
+    if (name === 'jump') {
+      setView('settings');
+      expandJump($('[data-pane="settings"] [data-jumpblock]'));
+      return;
+    }
     $$('.views button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === name)));
-    const paneOf = { connect: 'connect', connecting: 'connecting', files: 'files', terminal: 'terminal', sync: 'sync', settings: 'settings', jump: 'jump', error: 'error' }[name];
+    const paneOf = { connect: 'connect', new: 'new', connecting: 'connecting', files: 'files', terminal: 'terminal', sync: 'sync', settings: 'settings', error: 'error' }[name];
     $$('.pane').forEach(p => p.dataset.active = String(p.dataset.pane === paneOf));
     $$('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.pane === paneOf)));
     /* 头部状态跟随 */
     const dot = $('#hostDot'), meta = $('#hostMeta');
+    const hostName = $('#hostName');
+    if (hostName) hostName.textContent = name === 'new' ? '新建连接' : 'prod-web-01';
     if (name === 'connecting') { dot.className = 'dot warn pulse'; meta.textContent = '正在建立连接…'; }
     else if (name === 'error') { dot.className = 'dot err'; meta.textContent = '第 2 跳 bastion-b:2222 · 认证失败'; }
     else if (name === 'connect') { dot.className = 'dot'; meta.textContent = '未连接'; }
-    else if (name === 'jump') { dot.className = 'dot on'; meta.textContent = 'ubuntu@10.0.3.21:22 · 经 2 跳 · 18ms'; }
-    else { dot.className = 'dot on'; meta.textContent = 'ubuntu@10.0.3.21:22 · Ubuntu 22.04 · 18ms'; }
+    else if (name === 'new') { dot.className = 'dot'; meta.textContent = '未连接 · 新建'; }
+    else { dot.className = 'dot on'; meta.textContent = 'ubuntu@10.0.3.21:22 · 经 2 跳 · 18ms'; }
     /* 底栏状态也跟着走，别在错误页写着「已连接」 */
     const foot = { text: '已连接', dot: 'dot on' };
-    if (name === 'connect') { foot.text = '未连接'; foot.dot = 'dot'; }
+    if (name === 'connect' || name === 'new') { foot.text = '未连接'; foot.dot = 'dot'; }
     else if (name === 'connecting') { foot.text = '连接中'; foot.dot = 'dot warn pulse'; }
     else if (name === 'error') { foot.text = '连接失败'; foot.dot = 'dot err'; }
     $('#footText').textContent = foot.text;
@@ -994,7 +983,101 @@
   /* 开关 */
   function toggleSw(el) { el.setAttribute('aria-checked', el.getAttribute('aria-checked') === 'true' ? 'false' : 'true'); }
 
-  /* ── 跳板链路 ─────────────────────────────────────────── */
+  /* ── 跳板链路：新建与设置共用一个编辑块 ─────────────────── */
+  const AUTH_LABEL = { key: '密钥', pass: '密码', agent: 'ssh-agent', kbd: '键盘交互', inherit: '复用目标机凭据' };
+
+  function jumpBlockHTML(cfg) {
+    const t = cfg.target;
+    return `
+      <div class="jumpblock" data-jumpblock data-tname="${escapeHtml(t.name)}" data-tuser="${escapeHtml(t.user)}" data-thost="${escapeHtml(t.host)}" data-tport="${t.port}" data-tauth="${t.auth}">
+        ${cfg.collapsed ? `<div class="jumpsum" data-jumpsum>
+          <span class="chip acc" data-sumchip></span>
+          <span class="jsub" style="flex:1" data-sumtext></span>
+          <button class="btn sm" onclick="toggleJump(this)" data-sumbtn>展开</button>
+        </div>
+        <div class="jumpbody" data-jumpbody hidden>` : `<div class="jumpbody" data-jumpbody>`}
+          <div class="card" style="margin-bottom:10px">
+            <div class="card-h"><svg class="ic"><use href="#i-link"/></svg><b>链路</b><span class="jsub" style="margin-left:auto" data-chainhint></span></div>
+            <div class="card-b">
+              <div class="jchain"></div>
+              <div class="actrow">
+                <button class="btn primary sm" onclick="testChain(this)"><svg class="ic"><use href="#i-refresh"/></svg>测试整条链路</button>
+                <button class="btn sm" onclick="toast('已按 ssh config 的 ProxyJump 重建成两跳')">从 ssh config 导入</button>
+                <button class="btn ghost sm" onclick="clearChain(this)">不用跳板</button>
+              </div>
+            </div>
+          </div>
+          <div class="jnote">每一跳都要能开 <code>direct-tcpip</code>（<code>ssh -W</code> 干的事）。开不了的那一跳会被指名，而不是笼统一句「连接超时」。<br>密码 / 密钥 / agent 按跳各配各的 —— 不会拿目标机的凭据去试跳板。</div>
+          <div class="hops"></div>
+          <button class="btn sm" style="margin-bottom:10px" onclick="addHop(this)"><svg class="ic"><use href="#i-plus"/></svg>再加一跳</button>
+        </div>
+      </div>`;
+  }
+
+  function hopHTML(h, i) {
+    const opt = (k) => `<option value="${k}"${h.auth === k ? ' selected' : ''}>${AUTH_LABEL[k]}</option>`;
+    return `
+      <div class="hop" data-hop>
+        <div class="hop-head${h.open ? ' open' : ''}" onclick="toggleHop(this)">
+          <span class="hop-no">${i + 1}</span>
+          <div class="jtxt">
+            <div class="jnm">${escapeHtml(h.name || '新跳板')}</div>
+            <div class="jsub">${escapeHtml(hopSub(h))}</div>
+          </div>
+          <span class="hop-acts">
+            <button class="act" title="上移" onclick="event.stopPropagation();hopMove(this,-1)"><svg class="ic" style="width:12px;height:12px"><use href="#i-up"/></svg></button>
+            <button class="act" title="下移" onclick="event.stopPropagation();hopMove(this,1)"><svg class="ic" style="width:12px;height:12px"><use href="#i-down"/></svg></button>
+            <button class="act" title="删掉这一跳" onclick="event.stopPropagation();hopRemove(this)"><svg class="ic" style="width:12px;height:12px"><use href="#i-x"/></svg></button>
+          </span>
+          <svg class="ic chev" style="width:12px;height:12px"><use href="#i-chev"/></svg>
+        </div>
+        <div class="hop-body"${h.open ? '' : ' hidden'}>
+          <div class="grid2">
+            <div class="field"><label>主机</label><input value="${escapeHtml(h.host)}" data-f="host" oninput="hopEdited(this)" /></div>
+            <div class="field"><label>端口</label><input value="${h.port}" data-f="port" oninput="hopEdited(this)" /></div>
+          </div>
+          <div class="grid2">
+            <div class="field"><label>用户</label><input value="${escapeHtml(h.user)}" data-f="user" oninput="hopEdited(this)" /></div>
+            <div class="field"><label>认证</label>
+              <select data-f="auth" onchange="hopAuth(this)">${['key', 'pass', 'agent', 'kbd'].map(opt).join('')}</select>
+            </div>
+          </div>
+          <div class="authpart" data-auth="key"${h.auth === 'key' ? '' : ' hidden'}>
+            <div class="field"><label>私钥</label><input value="${escapeHtml(h.key || '~/.ssh/id_ed25519')}" data-f="key" /></div>
+          </div>
+          <div class="authpart" data-auth="pass"${h.auth === 'pass' ? '' : ' hidden'}>
+            <div class="field"><label>密码</label><input type="password" value="" data-f="pass" placeholder="留空则这一跳握手时再问" /></div>
+            <div class="hintline" style="margin-top:6px">不填就在这一跳握手时弹一次；勾了「记住」才进系统钥匙串。</div>
+          </div>
+          <div class="authpart" data-auth="agent"${h.auth === 'agent' ? '' : ' hidden'}>
+            <div class="hintline">用本机 ssh-agent 里的钥匙，适合跳板与目标机不是同一套凭据的场景。</div>
+          </div>
+          <div class="authpart" data-auth="kbd"${h.auth === 'kbd' ? '' : ' hidden'}>
+            <div class="hintline">连接时按服务器提示弹输入：密码、验证码、二次确认。</div>
+          </div>
+          <div class="hintline"><span class="chip${h.fp ? ' ok' : ''}">${h.fp ? '指纹已钉住' : '尚未连接'}</span>${h.fp ? `<span style="font-family:var(--mono)">${escapeHtml(h.fp)}</span>` : '<span>第一次连上后记录指纹</span>'}</div>
+        </div>
+      </div>`;
+  }
+
+  function hopSub(h) {
+    return `${h.user || '（没填用户）'}@${h.host || '（没填主机）'}:${h.port || 22} · ${AUTH_LABEL[h.auth] || '密钥'}`;
+  }
+
+  function readHop(hop) {
+    const v = (f) => { const el = hop.querySelector(`[data-f="${f}"]`); return el ? el.value : ''; };
+    return { host: v('host'), port: v('port'), user: v('user'), auth: v('auth'), key: v('key') };
+  }
+
+  function mountJump(sel, cfg) {
+    const mount = $(sel);
+    if (!mount) return;
+    mount.innerHTML = jumpBlockHTML(cfg);
+    const block = $('[data-jumpblock]', mount);
+    $('.hops', block).innerHTML = cfg.hops.map((h, i) => hopHTML(h, i)).join('');
+    syncChain(block);
+  }
+
   function toggleHop(head) {
     const body = head.parentElement.querySelector('.hop-body');
     if (!body) return;
@@ -1002,86 +1085,172 @@
     head.classList.toggle('open', !body.hidden);
   }
 
+  function hopAuth(sel) {
+    const hop = sel.closest('.hop');
+    $$('.authpart', hop).forEach(p => { p.hidden = p.dataset.auth !== sel.value; });
+    hopEdited(sel);
+  }
+
+  /* 卡片字段一改，标题副行与上面的链路图一起跟着改 */
+  function hopEdited(input) {
+    const hop = input.closest('.hop');
+    const block = input.closest('[data-jumpblock]');
+    hop.querySelector('.jsub').textContent = hopSub(readHop(hop));
+    syncChain(block);
+  }
+
   function hopMove(btn, dir) {
     const hop = btn.closest('.hop');
+    const block = btn.closest('[data-jumpblock]');
     const sibling = dir < 0 ? hop.previousElementSibling : hop.nextElementSibling;
     if (!sibling || !sibling.classList.contains('hop')) {
       return toast(dir < 0 ? '已经是第一跳了' : '已经在目标机前面了');
     }
     if (dir < 0) hop.parentElement.insertBefore(hop, sibling);
     else hop.parentElement.insertBefore(sibling, hop);
-    renumberHops(); syncChain();
+    renumberHops(block); syncChain(block);
     toast('顺序已改：流量先经过靠上的那台');
   }
 
   function hopRemove(btn) {
-    if ($$('.hop').length <= 1) return toast('至少留一跳；不想用跳板就整条删掉');
     const hop = btn.closest('.hop');
+    const block = btn.closest('[data-jumpblock]');
     hop.style.opacity = '0';
     hop.style.transition = 'opacity .14s';
-    setTimeout(() => { hop.remove(); renumberHops(); syncChain(); toast('已移除一跳，链路随之更新'); }, 140);
+    setTimeout(() => {
+      hop.remove();
+      renumberHops(block); syncChain(block);
+      toast($$('.hop', block).length ? '已移除一跳，链路随之更新' : '已经不用跳板了，改回直连');
+    }, 140);
   }
 
-  function addHop() {
-    const hops = $$('.hop');
-    const last = hops[hops.length - 1];
-    if (!last) return;
-    const clone = last.cloneNode(true);
-    clone.querySelector('.jnm').textContent = '新跳板';
-    clone.querySelector('.jsub').textContent = 'host:22 · 待填写';
-    clone.querySelectorAll('input').forEach(i => { i.value = ''; });
-    const body = clone.querySelector('.hop-body');
-    if (body) body.hidden = true;
-    const head = clone.querySelector('.hop-head');
-    if (head) head.classList.remove('open');
-    last.after(clone);
-    renumberHops(); syncChain();
+  function addHop(btn) {
+    const block = btn.closest('[data-jumpblock]');
+    const hops = $$('.hop', block);
+    $('.hops', block).insertAdjacentHTML('beforeend', hopHTML({ name: '新跳板', host: '', port: 22, user: '', auth: 'key', open: true }, hops.length));
+    renumberHops(block); syncChain(block);
+    $$('.hop', block).pop().scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     toast('已加一跳（插在最后一跳与目标机之间）');
   }
 
-  function renumberHops() {
-    $$('.hop').forEach((h, i) => { const n = h.querySelector('.hop-no'); if (n) n.textContent = String(i + 1); });
+  function clearChain(btn) {
+    const block = btn.closest('[data-jumpblock]');
+    $$('.hop', block).forEach(h => h.remove());
+    syncChain(block);
+    toast('已清空跳板，改成直连目标机');
   }
 
-  /* 卡片改了名字，上面的链路图跟着改 */
-  function syncChain() {
-    const chain = $('.jchain');
-    const local = $('.jnode.local');
-    const goal = $('.jnode.goal');
-    if (!chain || !local || !goal) return;
-    chain.innerHTML = '';
-    chain.appendChild(local);
-    $$('.hop').forEach((hop, i) => {
-      const rail = document.createElement('div');
-      rail.className = 'jrail';
-      rail.innerHTML = '<span>direct-tcpip ↓</span>';
-      chain.appendChild(rail);
-      const node = document.createElement('div');
-      node.className = 'jnode';
-      node.dataset.jnode = '';
-      node.innerHTML = `<span class="jnum">${i + 1}</span><div class="jtxt"><div class="jnm">${escapeHtml(hop.querySelector('.jnm').textContent)}</div><div class="jsub">${escapeHtml(hop.querySelector('.jsub').textContent)}</div></div><span class="jstat">—</span>`;
-      chain.appendChild(node);
+  function renumberHops(block) {
+    $$('.hop', block).forEach((h, i) => { const n = h.querySelector('.hop-no'); if (n) n.textContent = String(i + 1); });
+  }
+
+  /* 从卡片重建链路图：加 / 删 / 移 / 改字段都走它，图和卡永远一致 */
+  function syncChain(block) {
+    if (!block) return;
+    const chain = $('.jchain', block);
+    if (!chain) return;
+    const t = {
+      name: block.dataset.tname, user: block.dataset.tuser,
+      host: block.dataset.thost, port: block.dataset.tport, auth: block.dataset.tauth,
+    };
+    const rail = '<div class="jrail"><span>direct-tcpip ↓</span></div>';
+    const hops = $$('.hop', block);
+    let html = '<div class="jnode local" data-jnode><span class="jnum"><svg class="ic" style="width:10px;height:10px"><use href="#i-term"/></svg></span>'
+      + '<div class="jtxt"><div class="jnm">本机</div><div class="jsub">DSH 进程发起 · 不需要能直连目标网段</div></div><span class="jstat">—</span></div>';
+    hops.forEach((hop, i) => {
+      const h = readHop(hop);
+      const name = hop.querySelector('.jnm').textContent;
+      html += rail + `<div class="jnode" data-jnode><span class="jnum">${i + 1}</span><div class="jtxt"><div class="jnm">${escapeHtml(name)}</div><div class="jsub">${escapeHtml(hopSub(h))}</div></div><span class="jstat">—</span></div>`;
     });
-    const rail = document.createElement('div');
-    rail.className = 'jrail';
-    rail.innerHTML = '<span>direct-tcpip ↓</span>';
-    chain.appendChild(rail);
-    chain.appendChild(goal);
+    html += rail + `<div class="jnode goal" data-jnode><span class="jnum">◎</span><div class="jtxt"><div class="jnm">${escapeHtml(t.name || '目标机')}<span class="chip acc">目标</span></div><div class="jsub">${escapeHtml(`${t.user}@${t.host}:${t.port} · ${AUTH_LABEL[t.auth] || '密钥'}`)}</div></div><span class="jstat">—</span></div>`;
+    chain.innerHTML = html;
+
+    const hint = $('[data-chainhint]', block);
+    if (hint) hint.textContent = hops.length ? `本机 → ${hops.length} 跳 → ${t.name || '目标'}` : `本机 → 直连 → ${t.name || '目标'}`;
+    const body = $('[data-jumpbody]', block);
+    const sumbtn = $('[data-sumbtn]', block);
+    if (sumbtn && body) sumbtn.textContent = body.hidden ? '展开' : '收起';
+    updateSummary(block);
   }
 
-  function testChain() {
-    const nodes = $$('[data-jnode]');
-    const times = ['0.4ms', '8ms', '11ms', '24ms'];
+  function updateSummary(block) {
+    const chip = $('[data-sumchip]', block);
+    const text = $('[data-sumtext]', block);
+    if (!chip || !text) return;
+    const hops = $$('.hop', block);
+    chip.textContent = hops.length ? `${hops.length} 跳` : '直连';
+    text.textContent = hops.length
+      ? hops.map((h) => `${h.querySelector('.jnm').textContent}:${readHop(h).port || 22}`).join(' → ')
+      : '不经过跳板';
+  }
+
+  function toggleJump(btn) {
+    const block = btn.closest('[data-jumpblock]');
+    const body = $('[data-jumpbody]', block);
+    body.hidden = !body.hidden;
+    btn.textContent = body.hidden ? '展开' : '收起';
+  }
+
+  function expandJump(block) {
+    if (!block) return;
+    const body = $('[data-jumpbody]', block);
+    if (!body || !body.hidden) return;
+    body.hidden = false;
+    const sumbtn = $('[data-sumbtn]', block);
+    if (sumbtn) sumbtn.textContent = '收起';
+  }
+
+  function testChain(btn) {
+    const block = btn.closest('[data-jumpblock]');
+    const nodes = $$('[data-jnode]', block);
     nodes.forEach(n => { const s = n.querySelector('.jstat'); if (s) { s.className = 'jstat'; s.textContent = '…'; } });
     let i = 0;
     const step = () => {
-      if (i >= nodes.length) { toast('链路连通：逐跳 43ms，目标机往返 24ms'); return; }
+      if (i >= nodes.length) { toast(`链路连通：${nodes.length - 1} 段，目标机往返 24ms`); return; }
       const s = nodes[i].querySelector('.jstat');
-      if (s) { s.className = 'jstat ok'; s.textContent = times[i] ?? 'ok'; }
+      if (s) {
+        s.className = 'jstat ok';
+        s.textContent = i === 0 ? '0.4ms' : (i === nodes.length - 1 ? '24ms' : `${6 + i * 3}ms`);
+      }
       i += 1;
       setTimeout(step, 380);
     };
     setTimeout(step, 160);
+  }
+
+  /* 表单里的目标字段改了，链路图的目标节点跟着改 */
+  function targetInput(input) {
+    const pane = input.closest('.pane');
+    const block = pane.querySelector('[data-jumpblock]');
+    if (!block) return;
+    const f = input.dataset.tf;
+    if (f === 'name') block.dataset.tname = input.value;
+    else if (f === 'host') block.dataset.thost = input.value;
+    else if (f === 'port') block.dataset.tport = input.value;
+    else if (f === 'user') block.dataset.tuser = input.value;
+    syncChain(block);
+  }
+
+  /* 认证方式切换：只显示对应的那组字段 */
+  function authChanged(sel) {
+    const form = sel.closest('.form');
+    $$('.authpart', form).forEach(p => { p.hidden = p.dataset.auth !== sel.value; });
+    const block = sel.closest('.pane').querySelector('[data-jumpblock]');
+    if (block) { block.dataset.tauth = sel.value; syncChain(block); }
+  }
+
+  /* 错误页「去改这一跳」：落到设置里对应的那一跳并高亮 */
+  function gotoHop(n) {
+    setView('settings');
+    const block = $('[data-pane="settings"] [data-jumpblock]');
+    expandJump(block);
+    const hop = $$('.hop', block)[n - 1];
+    if (!hop) return;
+    const body = hop.querySelector('.hop-body');
+    if (body.hidden) toggleHop(hop.querySelector('.hop-head'));
+    hop.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    hop.classList.add('flash');
+    setTimeout(() => hop.classList.remove('flash'), 1500);
   }
 
   /* 分段控件 */
@@ -1150,7 +1319,24 @@
     if (pct >= 100) label.style.color = 'var(--green)';
   }, 900);
 
-  /* ?view=terminal|sync|settings|connect|connecting|error 直接打开某个状态 */
+  /* 新建与设置各自挂一个跳板编辑块（同一份模板，两种初始状态） */
+  mountJump('#jumpNew', {
+    target: { name: 'staging-2', user: 'deploy', host: '10.0.3.30', port: 22, auth: 'pass' },
+    hops: [
+      { name: 'bastion-a', host: '10.0.0.5', port: 22, user: 'jump', auth: 'key', key: '~/.ssh/id_ed25519', fp: 'SHA256:9x2f…7ab', open: true },
+    ],
+  });
+
+  mountJump('#jumpEdit', {
+    target: { name: 'prod-web-01', user: 'ubuntu', host: '10.0.3.21', port: 22, auth: 'key' },
+    collapsed: true,
+    hops: [
+      { name: 'bastion-a', host: '10.0.0.5', port: 22, user: 'jump', auth: 'key', key: '~/.ssh/id_ed25519', fp: 'SHA256:9x2f…7ab' },
+      { name: 'bastion-b', host: '10.0.0.9', port: 2222, user: 'ops', auth: 'agent' },
+    ],
+  });
+
+  /* ?view=terminal|sync|settings|new|connect|connecting|error 直接打开某个状态 */
   const initial = new URLSearchParams(location.search).get('view');
   if (initial) setView(initial);
 

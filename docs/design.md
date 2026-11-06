@@ -632,7 +632,15 @@ targetOptions.sock = prev
 3. **拆链顺序从里到外。** 目标 → 最后一跳 → … → 第一跳。反了会让还活着的通道指向已关闭的 socket。
 4. **错误必须带跳号。** `{ code:'jump-auth-failed', hop: 2, host:'10.0.0.9', port: 2222 }`。界面上说「第 2 跳认证失败」，而不是把 `Permission denied` 直接贴给用户 —— 一跳时看不出差别，两跳时「哪台拒了我」是唯一有用的问题。
 
-**界面：链路图 + 每跳一张卡。** 设置页只留一行摘要（`2 跳  bastion-a:22 → bastion-b:2222  [编辑]`），不再给一个自由文本框 —— 一个字符串输入框没法表达「第二跳端口是 2222、账号是 ops」。编辑放在独立视图里：上方是 `本机 → 第1跳 → … → 目标` 的链路图（可「测试整条链路」逐跳点亮），下方每跳一张可展开的卡，能改端口、能换认证、能上移下移删除。连接中的进度条按跳分级，失败页按跳定位并给「去改这一跳」。
+**界面：链路图 + 每跳一张卡，但**不**做成独立页面。** 跳板不是独立资源，它是「这台主机怎么连」的一部分 —— 没有全局跳板列表这种东西，给它一个顶级入口会暗示它是个独立实体，也意味着同一个状态要在两处编辑、两处保存、两套迁移。所以：
+
+- **新建连接表单**里就有「跳板链路（可选）」：默认展开一跳（`bastion-a:22`），链路图 + 每跳卡片直接可见，填主机的同时就能把跳板配完。
+- **设置（编辑已有主机）**里同一块收成一行摘要（`2 跳  bastion-a:22 → bastion-b:2222  [展开]`），点开就是同一套链路图与卡片。
+- 两处复用**同一个组件与同一份状态**（`HostForm` 里的 `jump.hops`），没有第二份实现。自由文本框删掉 —— 一个字符串表达不了「第二跳端口 2222、账号 ops」。
+- 运行期信息不塞进表单：连接中按跳分级进度，失败页按跳定位，`去改这一跳` 直接跳到设置里那一跳并高亮展开（`gotoHop(n)`）。
+- 原型里的旧链接 `?view=jump` 保留为别名，落到设置 + 展开的跳板块，避免已有文档/书签失效。
+
+**为什么这样合并（而不是留独立页）**：跳板的输入全是「目标的连接参数」的子集 —— 主机、端口、用户、认证。独立页面会让同一件事有两个真值来源；而链路图、逐跳耗时、指纹这些**诊断**信息又只在连接时才需要，放在表单旁边的折叠区比放在顶级 tab 更合适。代价是表单变长：用折叠 + 摘要行换空间，比多一个页面便宜。
 
 **边界（写清楚，免得被误解）：**
 
@@ -640,4 +648,55 @@ targetOptions.sock = prev
 - 跳板只决定**怎么到达目标**。`-L` / `-D` / `-R` 仍然挂在目标机那条连接上，不存在「从第 2 跳出去开端口」。
 - 不做：跳板层的 `-R`、每跳独立 keepalive、多主机共享一跳（ControlMaster 式复用）。共享一跳看着省一次握手，代价是任何一台主机断开都得判断「这条跳板通道还有没有人用」，在 `SshPool` 里引入引用计数远比省下的 20ms 贵。
 
-**改动面：** `src/ssh/pool.js`（链路循环、拆链、错误归位）、`src/ssh/config.js`（`ProxyJump` 展开成多跳）、`client/settings-view.jsx`（摘要行）、新增 `client/jump-view.jsx`（链路图与每跳卡片）、`test/forward.mjs` 的假 sshd 补串联的 `direct-tcpip`。测试要钉四件事：两跳真的连通、第二跳的 2222 生效、第二跳凭据与目标机不同也能连、第二跳挂掉时错误里 `hop === 2`。
+**改动面：** `src/ssh/pool.js`（链路循环、拆链、错误归位）、`src/ssh/config.js`（`ProxyJump` 展开成多跳）、新增 `client/host-form.jsx`（新建与设置共用：认证方式 + 跳板折叠区 + 链路图 + 每跳卡片）、`client/settings-view.jsx`（摘要行与 `gotoHop`）、`test/forward.mjs` 的假 sshd 补串联的 `direct-tcpip`。测试要钉四件事：两跳真的连通、第二跳的 2222 生效、第二跳凭据与目标机不同也能连、第二跳挂掉时错误里 `hop === 2`。
+
+### 8.17 没有密钥的机器：密码与 keyboard-interactive（v0.7.0 计划）
+
+先说清哪些是已有的：**目标机的密码登录今天就能用** —— `client/connect-view.jsx` 在主机 `auth.type === 'password'` 时给出密码框（旁边写着「仅本次会话，不写入磁盘」），`SshPool.#secrets` 只把密码留在内存、断开即清；密钥被拒时还有「改用密码」的切换按钮。这一节写的是还缺的三块：**跳板每一跳的凭据**、**keyboard-interactive（2FA）**、**「记住密码」**。
+
+**三种认证，不是两种。** ssh2 侧分别是：
+
+| 界面选项 | ssh2 参数 | 说明 |
+|---|---|---|
+| 密钥文件 | `privateKey` (+ `passphrase`) | 今天已有的路径 |
+| 密码 | `password` | 服务器 `PasswordAuthentication yes` 才可用 |
+| ssh-agent | `agent` | Windows 指到 `\\.\pipe\openssh-ssh-agent`，需要服务在跑 |
+| 键盘交互（2FA） | `tryKeyboard: true` + `keyboard-interactive` 事件 | 密码、OTP、二次确认都走这条；prompts 可能有多个 |
+
+**密码必须是明文进 `ssh2`，所以只能「内存里拿着」。** 没有可用的预哈希方案（协议要求客户端出示明文/等价凭据）。因此：
+
+- 默认**不落盘**：只在 `SshPool.#secrets` 里跟着这条连接活着，断线重连还能自愈，进程退出即消失。
+- 勾了「记住」才写**系统钥匙串**（`@napi-rs/keyring` 之类，service `dsh-remote-ssh`，account `${hostId}:${hopIndex}:${user}`）。**不写** `config.json` —— 明文密码进配置文件是最常见的泄露路径，而且 `~/.dsh` 会被同步/备份。
+- 配置文件里只留 `auth: { type: 'password', saved: true }`；`saved: true` 但钥匙串里取不到时，降级成「连接时问一次」，不要直接报错。
+
+**交互时序：认证在 `connect()` 里同步发生，所以要用 `authHandler` 挂起，而不是重连一次。** 先建 TCP、做完主机密钥校验，然后 ssh2 进入认证；`authHandler(methodsLeft, partialSuccess, callback)` 的 `callback` 可以**异步**调用，正好用来等用户输入：
+
+```js
+const client = new Client()
+client.on('keyboard-interactive', (name, instr, lang, prompts, finish) => {
+  ui.ask({ hop, prompts })            // 多个 prompt 就渲染多个输入框
+    .then((answers) => finish(answers))
+    .catch(() => finish([]))
+})
+await ready(client, {
+  ...hopOptions(hop),
+  tryKeyboard: true,
+  authHandler(methodsLeft, partial, cb) {
+    if (methodsLeft.includes('password')) return cb({ type: 'password', username: hop.user, password: askOnce(hop) })
+    if (methodsLeft.includes('keyboard-interactive')) return cb({ type: 'keyboard-interactive', username: hop.user })
+    cb(new Error('no-supported-auth'))
+  },
+})
+```
+
+重连一次也能实现，但要把整条跳板链重建一遍（`direct-tcpip` 逐个重开），多几百毫秒还可能撞上失败计数；`authHandler` 是原地等待，代价只有等待本身。
+
+**每跳单独问，顺序就是链路顺序。** 事件里必须带 `{ hop, host, port, user, methods }`，UI 才说得出「第 2 跳 bastion-b 要密码」。**绝不能**拿目标机的密码去试跳板（现在的 `jumpAuth ?? host.auth` 就是这个问题），也不能把同一个密码自动重试到下一跳 —— 密码错误次数会触发 `MaxAuthTries` 甚至封 IP。
+
+**后台路径不能弹窗。** 同步 watcher、终端重连、转发保活都是无人值守的：它们只能靠「已记住的密码」或 agent。取不到就失败，并把错误标成 `needs-credential`，由 UI 给一次「重新输入」（然后重启那条连接），而不是卡在一个没人看的输入框上。这也是为什么 `saved: true` 的密码在池子里要按 `hostId + hopIndex` 缓存，而不是只存在表单里。
+
+**指纹先校验，再问密码。** `hostVerifier` 必须在第一次 `authHandler` 之前跑完 —— 密码不该交给一个还没验证过身份的通道。
+
+**错误要能分辨「服务器不接受密码」。** `PasswordAuthentication no` 时 ssh2 最终是 `All configured authentication methods failed`；把 `methodsLeft` 一起带出来，UI 才能说「这台只接受 publickey」，而不是让用户反复输密码。
+
+**改动面：** `src/ssh/pool.js`（`authHandler`、每跳凭据、`needs-credential`、钥匙串读写）、新增 `src/ssh/credentials.js`（内存 + keyring 两层）、把 `client/settings-view.jsx` 里的认证字段抽成 `client/host-form.jsx` 供新建与设置共用、`client/connect-view.jsx`（按跳要求凭据的输入卡，现在只有目标机那一格）、`src/store.js`（只存 `auth.type` 与 `saved`）。测试钉四件事：密码登录能连上、密码错误时错误码是 `auth-failed` 而不是超时、keyboard-interactive 的多个 prompt 按顺序回填、重启进程后未保存的密码不会从磁盘被读出来。
