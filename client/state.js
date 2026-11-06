@@ -283,7 +283,8 @@ export const secretStore = new Map()
  * Connect a saved host, attaching any credential typed in this session.
  * @param {object} ctx - client context.
  * @param {object} host - stored host row.
- * @param {{password?: string, passphrase?: string, jumpPassword?: string, jumpPassphrase?: string}} [override] - just-typed secrets.
+ * @param {{password?: string, passphrase?: string, jumpPasswords?: string[],
+ *   jumpPassphrases?: string[]}} [override] - just-typed secrets.
  * @returns {Promise<object>} `{hostId, status, info}`.
  */
 export async function connectHost(ctx, host, override = {}) {
@@ -293,9 +294,10 @@ export async function connectHost(ctx, host, override = {}) {
     auth.password = override.password ?? cached.password
   }
   if (host.auth?.type === 'key') auth.passphrase = override.passphrase ?? cached.passphrase
-  // The jump hop authenticates separately; its secrets travel under their own
-  // names so `hostOf` can place them on the right hop.
-  auth.jumpPassword = override.jumpPassword ?? cached.jumpPassword
-  auth.jumpPassphrase = override.jumpPassphrase ?? cached.jumpPassphrase
+  // Each hop of a chain authenticates separately; its secrets travel as one
+  // index-aligned array so `hostOf` can place them on the right hop instead of
+  // guessing which password belongs to which bastion.
+  auth.jumpPasswords = override.jumpPasswords ?? cached.jumpPasswords
+  auth.jumpPassphrases = override.jumpPassphrases ?? cached.jumpPassphrases
   return api(ctx, 'hosts.connect', { hostId: host.id, auth })
 }

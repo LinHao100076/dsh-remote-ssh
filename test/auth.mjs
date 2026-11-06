@@ -313,8 +313,12 @@ await pendingG
 assert.equal(poolG.status('behind-jump'), 'connected', '跳板密码输完后应继续连目标机')
 poolG.close('behind-jump')
 
-/* ── 多跳配置：明确拒绝，而不是拿逗号当主机名 ─────────────────────────── */
-
+/*
+ * Multi-hop is supported now, so `ProxyJump a,b` is no longer refused here —
+ * it is dialled, in order. What this file still owns is that a *hop* failure is
+ * labelled with its number; the chain itself (two bastions, per-hop ports and
+ * credentials, inside-out teardown) lives in `test/jump.mjs`.
+ */
 const poolH = new SshPool({})
 // Explicit password: with no `auth` the row defaults to ssh-agent, and a CI
 // runner has no `SSH_AUTH_SOCK` — `hopAuth` would then fail with `no-agent`
@@ -329,8 +333,8 @@ const failureH = await poolH.ensure({
   proxyJump: 'a,b',
 })
   .then(() => undefined, (error) => error)
-assert.equal(failureH?.code, 'jump-multi-hop', '多跳还没做，要说清楚')
-assert.deepEqual(failureH.details.hops, ['a', 'b'])
+assert.equal(failureH?.code, 'dns-failed', '第一跳解析不了就是解析不了，不能报成「配置不支持」')
+assert.equal(failureH.details?.hop, 1, '并且要说清是第 1 跳')
 poolH.dispose()
 
 target.close()
@@ -338,4 +342,4 @@ bastion.close()
 kbdOnly.close()
 otp.close()
 
-console.log('auth: ok (keyboard-interactive auto-answer, 2FA prompt, background refusal, timeout, per-hop credentials, multi-hop refusal)')
+console.log('auth: ok (keyboard-interactive auto-answer, 2FA prompt, background refusal, timeout, per-hop credentials, hop-numbered errors)')

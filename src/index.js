@@ -41,7 +41,7 @@ export { SshPool, WebSocketServer }
 /** Routes, sessions and remote terminals need these services before mounting. */
 export const inject = ['webServer', 'sessions']
 
-const VERSION = '0.6.1'
+const VERSION = '0.7.0'
 
 /**
  * Mount the plugin.
@@ -60,13 +60,18 @@ export async function apply(ctx, config = {}) {
         void store.upsertHost({ id: hostId, fingerprint })
       }
     },
-    // The jump hop is pinned on the same row as the host, under its own field:
-    // one field would mean a bastion key rotation looks like the target's host
-    // key changing, and the error would name the wrong machine.
-    onJumpFingerprint: (hostId, fingerprint) => {
+    // Jump hops are pinned on the same row as the host, indexed by hop: one
+    // shared field would mean a bastion key rotation looks like the target's
+    // host key changing, and the error would name the wrong machine. The pool
+    // hands back the whole chain, because a chain that came from `ProxyJump`
+    // has no rows of its own — writing it out is what turns it into editable
+    // hops that can carry fingerprints.
+    onJumpFingerprint: (hostId, fingerprint, hop, hops) => {
       const host = store.host(hostId)
-      if (host === undefined || host.jump?.fingerprint === fingerprint) return
-      void store.upsertHost({ id: hostId, jump: { ...(host.jump ?? {}), fingerprint } })
+      if (host === undefined) return
+      const current = host.jump?.hops?.[hop]
+      if (current?.fingerprint === fingerprint) return
+      void store.upsertHost({ id: hostId, jump: { hops } })
     },
   })
   const files = new RemoteFiles(pool)

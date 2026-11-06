@@ -43,31 +43,72 @@ function draftKey(draft) {
   return `draft:${user}@${host}:${Number.isFinite(port) ? port : 22}`
 }
 
-/**
- * The persisted half of a jump hop, or `undefined` when there is none.
- *
- * The shape is deliberately the one a chain will use (`{host, port, user, auth,
- * fingerprint}`), so v0.7 only has to wrap it in `hops: [ … ]` instead of
- * migrating a flat pile of `jumpHost` / `jumpPort` / `jumpAuth` fields.
- */
-function jumpRow(raw) {
-  if (raw === undefined || raw === null) return undefined
-  const host = typeof raw.host === 'string' ? raw.host.trim() : ''
-  if (host === '') return undefined
+/** How many bastions a chain may have. Past this, the design is the problem. */
+const MAX_HOPS = 5
+
+/** One persisted jump hop. Throws with the hop number, which is what the UI shows. */
+function hopRow(raw, index) {
+  const at = `第 ${index + 1} 跳`
+  const host = typeof raw?.host === 'string' ? raw.host.trim() : ''
+  if (host === '') throw new ApiError('jump-bad-host', `${at}缺少主机地址`, 400)
   const port = Number(raw.port ?? 22)
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    throw new ApiError('bad-port', '跳板端口必须是 1-65535', 400)
+    throw new ApiError('bad-port', `${at}的端口必须是 1-65535`, 400)
   }
   const user = typeof raw.user === 'string' && raw.user.trim() !== '' ? raw.user.trim() : undefined
   const declared = raw.auth === undefined || raw.auth === null ? { type: 'inherit' } : raw.auth
-  const auth = declared.type === 'inherit'
-    ? { type: 'inherit' }
-    : normalizeAuth(declared)
+  const auth = declared.type === 'inherit' ? { type: 'inherit' } : normalizeAuth(declared)
   if (auth.type === 'key' && auth.keyPath === undefined) {
-    throw new ApiError('missing-key', '跳板的密钥认证需要指定私钥路径', 400)
+    throw new ApiError('missing-key', `${at}的密钥认证需要指定私钥路径`, 400)
   }
   const fingerprint = typeof raw.fingerprint === 'string' && raw.fingerprint !== '' ? raw.fingerprint : undefined
   return { host, port, user, auth, fingerprint }
+}
+
+/**
+ * The persisted jump chain, or `undefined` when the host is dialled directly.
+ *
+ * Order is traffic order (`hops[0]` connects first) and is the only thing that
+ * distinguishes "a → b" from "b → a". A single `{host, …}` object is accepted as
+ * one hop so a row written by 0.6.1 keeps working without a migration pass.
+ */
+function jumpRow(raw) {
+  if (raw === undefined || raw === null) return undefined
+  const list = Array.isArray(raw.hops)
+    ? raw.hops
+    : (typeof raw.host === 'string' ? [raw] : [])
+  if (list.length === 0) return undefined
+  if (list.length > MAX_HOPS) {
+    throw new ApiError('too-many-hops', `跳板最多 ${MAX_HOPS} 跳`, 400)
+  }
+  return { hops: list.map((hop, index) => hopRow(hop, index)) }
+}
+
+/** Per-hop secrets from one request payload, merged onto the stored chain. */
+function jumpWithSecrets(jump, secrets, index) {
+  const row = jump.hops[index]
+  const passwords = Array.isArray(secrets.jumpPasswords) ? secrets.jumpPasswords : []
+  const passphrases = Array.isArray(secrets.jumpPassphrases) ? secrets.jumpPassphrases : []
+  // `jumpPassword` is the 0.6.1 name and can only have meant the first hop.
+  const password = typeof passwords[index] === 'string' && passwords[index] !== ''
+    ? passwords[index]
+    : (index === 0 && typeof secrets.jumpPassword === 'string' && secrets.jumpPassword !== ''
+      ? secrets.jumpPassword
+      : undefined)
+  const passphrase = typeof passphrases[index] === 'string' && passphrases[index] !== ''
+    ? passphrases[index]
+    : (index === 0 && typeof secrets.jumpPassphrase === 'string' && secrets.jumpPassphrase !== ''
+      ? secrets.jumpPassphrase
+      : undefined)
+  if (password === undefined && passphrase === undefined) return row
+  return {
+    ...row,
+    auth: {
+      ...(row.auth ?? {}),
+      ...(password === undefined ? {} : { password }),
+      ...(passphrase === undefined ? {} : { passphrase }),
+    },
+  }
 }
 
 /**
@@ -87,13 +128,18 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
     const plain = { ...secrets }
     delete plain.jumpPassword
     delete plain.jumpPassphrase
+    delete plain.jumpPasswords
+    delete plain.jumpPassphrases
     const withSecrets = (host) => {
       const auth = { ...(host.auth ?? { type: 'agent' }), ...plain }
       if (host.jump === undefined) return { ...host, auth }
-      const jumpAuth = { ...(host.jump.auth ?? {}) }
-      if (typeof secrets.jumpPassword === 'string' && secrets.jumpPassword !== '') jumpAuth.password = secrets.jumpPassword
-      if (typeof secrets.jumpPassphrase === 'string' && secrets.jumpPassphrase !== '') jumpAuth.passphrase = secrets.jumpPassphrase
-      return { ...host, auth, jump: { ...host.jump, auth: jumpAuth } }
+      const jump = jumpRow(host.jump)
+      if (jump === undefined) return { ...host, auth }
+      return {
+        ...host,
+        auth,
+        jump: { hops: jump.hops.map((_, index) => jumpWithSecrets(jump, secrets, index)) },
+      }
     }
     if (allowDraft && payload.draft !== undefined && payload.draft !== null) {
       const draft = payload.draft
