@@ -20,6 +20,7 @@
  * @module dsh-remote-ssh/client/workspace
  */
 import { createElement as h, useCallback, useEffect, useRef, useState } from 'react'
+import { gateFor } from './gate.js'
 import {
   api, hostStore, refreshHosts, refreshStatuses, secretStore, usePolling, useStore,
 } from './state.js'
@@ -43,9 +44,6 @@ export const VIEWS = [
   { id: 'forward', label: '转发', icon: 'link' },
   { id: 'settings', label: '设置', icon: 'cog' },
 ]
-
-/** Panes that cannot say anything useful without a live connection. */
-const GATED = new Set(['files', 'terminal'])
 
 /** Stand-in for the seat-provided hook, so the body can call one unconditionally. */
 const useNoTabInfo = () => undefined
@@ -279,7 +277,7 @@ export function Workspace(props) {
   /* ── derived ────────────────────────────────────────────────────────── */
 
   const pending = sync.queue.filter((task) => task.state === 'queued' || task.state === 'uploading').length
-  const gate = busyStatus || (!creating && (host === undefined || (GATED.has(view) && !live)))
+  const gate = busyStatus || gateFor({ host, view, live })
   const meta = !host
     ? '未选择主机'
     : busyStatus
