@@ -109,6 +109,9 @@ dsh --profile <name> --no-open --port 4987
 
 `desktop` profile 由桌面应用独占，CLI 会拒绝（`profile "desktop" is managed exclusively by the Electron application`）。这种 profile 请在应用内的插件页面安装，或手工改 `package.json` 的 `bundles` 与 `cordis.patch.yml` 后重启应用。
 
+**桌面版升级后请完全退出并重新启动应用。** 安装页显示新版本、磁盘里的包已更新，不代表已打开窗口已经换成新客户端。如果升级到 0.7.1/0.7.2 后点击“新建 SSH 连接”仍没有反应，先重启应用再试；只关闭或重开侧栏不一定会重新加载模块。2026-11-09 在实际 `desktop` profile 的原生侧栏复现过：磁盘已为 0.7.2，窗口内存仍运行旧的 gate 判断，重新启动后连接页和主机菜单两个新建入口均能打开表单。详情见 [界面检查记录](docs/ui-buttons-2026-11-09.md)。
+
+
 开发期想直连源码目录（改代码立即生效，但要自己保证 `lib/client.js` 已构建）时，也可以只在 `cordis.patch.yml` 里插入：
 
 ```yaml
