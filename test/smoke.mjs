@@ -273,13 +273,13 @@ function fakeChannel() {
   return channel
 }
 
-async function runTerminal({ tmux }) {
+async function runTerminal({ tmux, sessionId = '', terminalId = '' }) {
   const { socket, sent } = fakeSocket()
   const channel = fakeChannel()
   let command
   await attachTerminal({
     ws: socket,
-    url: new URL('http://x/remote/ws/term?hostId=h1&cols=90&rows=20'),
+    url: new URL(`http://x/remote/ws/term?hostId=h1&cols=90&rows=20&sessionId=${sessionId}&terminalId=${terminalId}`),
     store: { host: (id) => (id === 'h1' ? { id: 'h1', name: 'h1' } : undefined) },
     pool: {
       channel: async (_host, options) => { command = options.command; return channel },
@@ -290,6 +290,13 @@ async function runTerminal({ tmux }) {
 }
 
 const withTmux = await runTerminal({ tmux: true })
+const firstTab = await runTerminal({ tmux: true, sessionId: 's1', terminalId: 't0' })
+const secondTab = await runTerminal({ tmux: true, sessionId: 's1', terminalId: 't1' })
+const otherSession = await runTerminal({ tmux: true, sessionId: 's2', terminalId: 't0' })
+const reattached = await runTerminal({ tmux: true, sessionId: 's1', terminalId: 't0' })
+assert.notEqual(firstTab.command, secondTab.command, 'new terminal must own a different tmux session')
+assert.notEqual(firstTab.command, otherSession.command, 'conversation sessions must not share shells')
+assert.equal(firstTab.command, reattached.command, 'the same tab reconnects to its original tmux session')
 assert.match(withTmux.command, /^tmux new -A -s dsh-/, 'tmux owns the session when it exists')
 assert.equal(withTmux.sent[0].t, 'status')
 const ready = withTmux.sent.find((frame) => frame.t === 'ready')

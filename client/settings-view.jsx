@@ -14,6 +14,7 @@
 import { createElement as h, Fragment, useEffect, useState } from 'react'
 import { api } from './state.js'
 import { Button, Field, Icon, Input, Select } from './ui.jsx'
+import { ConnectView } from './connect-view.jsx'
 
 const AUTH = [
   { value: 'agent', label: 'ssh-agent' },
@@ -91,6 +92,7 @@ function hopFromRow(row, host) {
     keyPath: row?.auth?.keyPath ?? host?.auth?.keyPath ?? BLANK.keyPath,
     password: '',
     passphrase: '',
+    fingerprint: row?.fingerprint,
   }
 }
 
@@ -124,6 +126,7 @@ function fromHost(host) {
     password: '',
     passphrase: '',
     jumpHops: stored.map((row) => hopFromRow(row, host)),
+    fingerprint: host?.fingerprint,
   }
 }
 
@@ -136,22 +139,25 @@ function chainSummary(hops) {
 
 /** Form state → persisted row (no secrets, no `proxyJump`: hops say it explicitly). */
 function toRow(form, id) {
-  const hops = form.jumpHops
-    .filter((hop) => hop.host.trim() !== '')
-    .map((hop) => ({
+  const hops = form.jumpHops.map((hop, index) => {
+    if (hop.host.trim() === '') throw new Error(`第 ${index + 1} 跳缺少主机地址`)
+    return {
       host: hop.host.trim(),
-      port: Number(hop.port) || 22,
+      port: hop.port.trim() === '' ? 22 : Number(hop.port),
+      fingerprint: hop.fingerprint,
       user: hop.user.trim() === '' ? undefined : hop.user.trim(),
       auth: {
         type: hop.authType,
         keyPath: hop.authType === 'key' ? hop.keyPath.trim() : undefined,
       },
-    }))
+    }
+  })
   return {
     id,
+    fingerprint: form.fingerprint,
     name: form.name.trim() === '' ? form.host.trim() : form.name.trim(),
     host: form.host.trim(),
-    port: Number(form.port) || 22,
+    port: form.port.trim() === '' ? 22 : Number(form.port),
     user: form.user.trim(),
     auth: {
       type: form.authType,
@@ -240,16 +246,15 @@ export function SettingsPane({
       const value = await api(ctx, 'hosts.save', { host: row })
       const typed = secret()
       setStatus({ tone: 'ok', text: '已保存' })
+      await onSaved(value.host, typed)
       if (andConnect === true) {
         if (value.host.auth.type === 'password' && (typed.password ?? '') === '') {
           // Nothing to connect with yet; the connect gate asks for it on screen.
-          await onSaved(value.host, typed)
           return
         }
         const passwordOk = await onConnect(value.host, typed)
         if (!passwordOk) setStatus({ tone: 'error', text: '已保存，但连接失败' })
       }
-      await onSaved(value.host, typed)
     } catch (error) {
       setStatus({ tone: 'error', text: error.message })
     } finally {
@@ -318,6 +323,13 @@ export function SettingsPane({
   }
 
   const editing = host !== undefined && creating !== true
+
+  if (busy === 'test') {
+    const draft = { ...toRow(form, host?.id) }
+    draft.id ??= `draft:${draft.user}@${draft.host}:${draft.port}`
+    return <ConnectView ctx={ctx} hosts={[draft]} statuses={{}} host={draft} status="connecting"
+      onCancel={() => { void api(ctx, 'hosts.disconnect', { hostId: draft.id }).catch(() => {}) }} />
+  }
 
   return (
     <div className="rs-scroll">

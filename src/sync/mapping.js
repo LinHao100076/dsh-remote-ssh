@@ -7,7 +7,7 @@
  * so turning it on never silently overwrites a remote-only edit.
  * @module dsh-remote-ssh/sync/mapping
  */
-import { sep } from 'node:path'
+import { sep, resolve, parse, win32 } from 'node:path'
 import { nextId, toLocalPath } from '../util.js'
 
 /** Product default excludes: VCS metadata, dependency trees, build output. */
@@ -32,9 +32,6 @@ export const DEFAULT_EXCLUDES = [
   '.DS_Store',
   'Thumbs.db',
 ]
-
-/** Local roots that must never be mirrored wholesale. */
-const FORBIDDEN_ROOTS = new Set(['/', 'c:/', 'c:\\', 'd:/', 'd:\\'])
 
 /** Convert a glob (npm-style: `*`, `**`, `?`, trailing `/`) into a RegExp. */
 function globToRegExp(pattern) {
@@ -90,10 +87,11 @@ export function createMatcher({ include = [], exclude = [] } = {}) {
       if (rule.test(dir)) return true
     }
   }
-  return (relPath) => {
+  return (relPath, isDir = false) => {
     const path = toLocalPath(relPath).replace(/^\/+/, '')
     if (path === '') return true
     for (const rule of excludeRes) if (hits(rule, path)) return false
+    if (isDir) return true
     if (includeRes.length === 0) return true
     return includeRes.some((rule) => hits(rule, path))
   }
@@ -112,11 +110,16 @@ export function relPosix(relPath) {
  */
 export function normalizeMapping(input, sessionCwd) {
   const localInput = toLocalPath(String(input.localRoot ?? '').trim())
-  const localRaw = localInput === '/' ? '/' : localInput.replace(/\/+$/, '')
+  if (localInput === '') throw new Error('请填写本地路径')
+  // Check Windows roots even on POSIX; do not turn C:/ into drive-relative C:.
+  if (/^[a-z]:\/?$/i.test(localInput)
+    || (localInput.startsWith('//') && win32.parse(win32.resolve(localInput)).root === win32.resolve(localInput))) {
+    throw new Error('不能把整个磁盘根目录设为映射')
+  }
+  const localRaw = resolve(sessionCwd ?? process.cwd(), localInput)
   const remoteRaw = String(input.remoteRoot ?? '').trim().replace(/\/+$/, '')
-  if (localRaw === '') throw new Error('请填写本地路径')
   if (!remoteRaw.startsWith('/')) throw new Error('远端路径必须是绝对路径')
-  if (FORBIDDEN_ROOTS.has(localRaw)) throw new Error('不能把整个磁盘根目录设为映射')
+  if (parse(localRaw).root === localRaw) throw new Error('不能把整个磁盘根目录设为映射')
   const direction = ['push', 'pull', 'both'].includes(input.direction) ? input.direction : 'push'
   const policy = ['off', 'save', 'all'].includes(input.policy) ? input.policy : 'save'
   const exclude = Array.isArray(input.exclude) && input.exclude.length > 0

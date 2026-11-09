@@ -131,7 +131,7 @@ export function SyncPane({ ctx, sessionId, hostId, hosts, statuses, active, snap
     })
     try {
       const cwd = await api(ctx, 'session.cwd', { sessionId })
-      setForm((current) => ({ ...current, localRoot: cwd.cwd ?? '' }))
+      setForm((current) => current === undefined ? current : ({ ...current, localRoot: cwd.cwd ?? '' }))
     } catch {
       // The field stays empty; the user can type a path.
     }
@@ -227,6 +227,7 @@ export function SyncPane({ ctx, sessionId, hostId, hosts, statuses, active, snap
                 if (!window.confirm(`把 ${mapping.localRoot} 的全部文件推送到 ${mapping.remoteRoot}？`)) return
                 void run(`push-${mapping.id}`, async () => {
                   const value = await api(ctx, 'sync.pushAll', { sessionId, mappingId: mapping.id })
+                  if (value.failed?.length > 0) throw new Error(`已推送 ${value.files} 个文件，${value.failed.length} 个失败：${value.failed[0].message}`)
                   flash(`已推送 ${value.files} 个文件 · ${formatBytes(value.bytes)}`)
                 })
               }}
@@ -277,7 +278,7 @@ export function SyncPane({ ctx, sessionId, hostId, hosts, statuses, active, snap
               <Icon name="sync" size={12} /><b>传输队列</b>
               <span className="rs-badge">{state.queue.length}</span>
               <span style={{ flex: 1 }} />
-              <Button size="sm" variant="ghost" onClick={() => void api(ctx, 'sync.flush', { sessionId }).then(reload).catch(() => {})}>刷新</Button>
+              <Button size="sm" variant="ghost" onClick={() => void run('flush', () => api(ctx, 'sync.flush', { sessionId }))}>刷新</Button>
             </div>
             {[...state.queue].reverse().slice(0, 12).map((task) => (
               <div key={task.id} className="rs-qitem">

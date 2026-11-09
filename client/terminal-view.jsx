@@ -62,7 +62,7 @@ function themeOf(root) {
  * One shell: emulator, socket, status bar and key hints.
  * @param {object} props - `ctx`, `sessionId`, `hostId`, `active`, `tmux`.
  */
-function TermSession({ ctx, sessionId, hostId, active, tmux }) {
+function TermSession({ ctx, sessionId, hostId, terminalId, active, tmux }) {
   const containerRef = useRef(null)
   const termRef = useRef(undefined)
   const fitRef = useRef(undefined)
@@ -125,6 +125,7 @@ function TermSession({ ctx, sessionId, hostId, active, tmux }) {
     const socket = new WebSocket(wsUrl(ctx, 'remote/ws/term', {
       hostId,
       sessionId,
+      terminalId,
       cols: term.cols,
       rows: term.rows,
     }))
@@ -151,6 +152,7 @@ function TermSession({ ctx, sessionId, hostId, active, tmux }) {
         ended = true
         term.write(`\r\n\x1b[2m[远端进程已退出${frame.code === null ? '' : ` · ${frame.code}`}]\x1b[0m\r\n`)
         setNotice('会话已结束，点「重连」开启新的会话')
+        setError('远端进程已退出')
         return
       }
       if (frame.t === 'error') setError(frame.message ?? '终端连接失败')
@@ -195,7 +197,7 @@ function TermSession({ ctx, sessionId, hostId, active, tmux }) {
       fitRef.current = undefined
       socketRef.current = undefined
     }
-  }, [ctx, hostId, sessionId, nonce])
+  }, [ctx, hostId, sessionId, terminalId, nonce])
 
   /* Reveal: fit to the box that just appeared, then take the keyboard. */
   useEffect(() => {
@@ -334,6 +336,7 @@ export function TerminalPane({ ctx, sessionId, hostId, host, hostInfo, active })
           ctx={ctx}
           sessionId={sessionId}
           hostId={hostId}
+          terminalId={tab.id}
           active={tab.id === activeId && active !== false}
           tmux={hostInfo?.tmux}
         />

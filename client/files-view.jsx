@@ -11,7 +11,7 @@
  */
 import { createElement as h, Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
-  api, dirnameRemote, formatBytes, joinLocal, joinRemote, readFileBase64, sinceLabel, useToast,
+  api, dirnameRemote, formatBytes, joinRemote, readFileBase64, sinceLabel, useToast,
 } from './state.js'
 import { Button, Icon, IconButton } from './ui.jsx'
 
@@ -27,7 +27,6 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState(undefined)
-  const [mapping, setMapping] = useState(undefined)
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [caseSensitive, setCaseSensitive] = useState(false)
@@ -41,20 +40,24 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
   /* Only the newest search may write results: a slow earlier request must not
      replace the hits of the query the user is actually looking at. */
   const searchSeq = useRef(0)
+  const loadSeq = useRef(0)
+  const peekSeq = useRef(0)
 
   /** List one directory and make it current. */
   const load = useCallback(async (target) => {
     if (hostId === '') return
+    const seq = ++loadSeq.current
     setBusy('load')
     setError(undefined)
     try {
       const value = await api(ctx, 'fs.list', { sessionId, hostId, path: target ?? '' })
+      if (seq !== loadSeq.current) return
       setDirs((current) => ({ ...current, [value.path]: value.entries }))
       setPath(value.path)
     } catch (failure) {
-      setError(failure.message)
+      if (seq === loadSeq.current) setError(failure.message)
     } finally {
-      setBusy('')
+      if (seq === loadSeq.current) setBusy('')
     }
   }, [ctx, hostId, sessionId])
 
@@ -67,7 +70,6 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
     setEditing(false)
     setPath('')
     setError(undefined)
-    setMapping(undefined)
     setFound(undefined)
     setSearchError(undefined)
     setQuery('')
@@ -78,7 +80,6 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
         const value = await api(ctx, 'sync.list', { sessionId })
         const found = (value.mappings ?? []).find((item) => item.hostId === hostId)
         if (found !== undefined) {
-          setMapping(found)
           if (found.remoteRoot !== '') root = found.remoteRoot
         }
       } catch {
@@ -86,7 +87,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
       }
       if (!cancelled) void load(root)
     })()
-    return () => { cancelled = true }
+    return () => { cancelled = true; loadSeq.current += 1; peekSeq.current += 1; searchSeq.current += 1 }
   }, [hostId, hostInfo?.home, ctx, sessionId, load])
 
   const toggleDir = async (entry) => {
@@ -102,15 +103,17 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
   }
 
   const openFile = async (entry, focusLine) => {
+    const seq = ++peekSeq.current
     setPeek({ path: entry.path, size: entry.size, loading: true, focusLine })
     setEditing(false)
     setError(undefined)
     try {
       const value = await api(ctx, 'fs.read', { sessionId, hostId, path: entry.path })
+      if (seq !== peekSeq.current) return
       setPeek({ path: entry.path, ...value, loading: false, focusLine })
       setDraft(value.text)
     } catch (failure) {
-      setPeek({ path: entry.path, size: entry.size, error: failure.message, focusLine })
+      if (seq === peekSeq.current) setPeek({ path: entry.path, size: entry.size, error: failure.message, focusLine })
     }
   }
 
@@ -155,6 +158,10 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
 
   /* Debounced live search; Enter runs it immediately. */
   useEffect(() => {
+    searchSeq.current += 1
+    setSearching(false)
+    setFound(undefined)
+    setSearchError(undefined)
     if (searchOpen !== true || query.trim() === '') return undefined
     const timer = setTimeout(() => { void runSearch(query) }, 350)
     return () => clearTimeout(timer)
@@ -207,16 +214,20 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
 
   /** Download one remote path into the mapping's local root. */
   const downloadTo = async (entry) => {
-    const root = mapping?.remoteRoot ?? ''
-    if (mapping === undefined || root === '' || !entry.path.startsWith(root)) {
-      flash('先为该主机建立路径映射，才能下载到本地')
-      return
-    }
-    const rel = entry.path.slice(root.length).replace(/^\/+/, '')
     setBusy('download')
     try {
-      await api(ctx, 'transfer.download', {
-        sessionId, hostId, remotePath: entry.path, localPath: joinLocal(mapping.localRoot, rel),
+      const snapshot = await api(ctx, 'sync.list', { sessionId })
+      const mapping = (snapshot.mappings ?? [])
+        .filter((item) => item.hostId === hostId && entry.path.startsWith(`${item.remoteRoot.replace(/\/+$/, '')}/`))
+        .sort((a, b) => b.remoteRoot.length - a.remoteRoot.length)[0]
+      if (mapping === undefined) {
+        flash('先为该主机建立路径映射，才能下载到本地')
+        return
+      }
+      const prefix = `${mapping.remoteRoot.replace(/\/+$/, '')}/`
+      const rel = entry.path.slice(prefix.length)
+      await api(ctx, 'sync.pull', {
+        sessionId, mappingId: mapping.id, rel,
       })
       flash(`已下载 ${entry.name ?? rel}`)
     } catch (failure) {

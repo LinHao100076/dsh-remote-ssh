@@ -60,7 +60,7 @@ git merge --no-ff feat/<短横线名字>       # 合回 main
 
 ## 测试要求
 
-`npm test` 十六轮必须全绿。新增能力请配一个 `test/<名字>.mjs`，并把它加进 `package.json` 的 `scripts.test` 与 README 的测试表。
+`npm test` 十八轮必须全绿。新增能力请配一个 `test/<名字>.mjs`，并把它加进 `package.json` 的 `scripts.test` 与 README 的测试表。
 
 这个仓库对测试有一条底线：**关键协议不许打桩替代。** 具体说：
 

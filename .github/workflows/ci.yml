@@ -15,6 +15,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  browser:
+    name: browser buttons (chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui
+
   test:
     name: test (node ${{ matrix.node }})
     runs-on: ubuntu-latest
@@ -39,7 +54,7 @@ jobs:
       - run: npm ci
 
       # pretest 钩子会先重建两个 bundle，所以这里跑的是刚要提交的源码。
-      - name: 十六轮测试
+      - name: 十八轮测试
         run: npm test
 
       # lib/ 是提交进版本库的构建产物（安装时不需要构建）。

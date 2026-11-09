@@ -20,6 +20,7 @@ import { mkdir, open as openLocal, opendir, rename, stat, unlink } from 'node:fs
 import { dirname, join } from 'node:path'
 import { RemoteError } from '../ssh/pool.js'
 import { call, dirnameRemote, formatBytes, joinRemote } from '../util.js'
+import { renameRemote } from './publish.js'
 
 /** Chunk size for chunked transfers; large enough to keep round trips rare. */
 const CHUNK = 1024 * 1024
@@ -65,12 +66,12 @@ async function* walkLocal(root, matcher, rel = '') {
   let handle
   try {
     handle = await opendir(rel === '' ? root : join(root, rel))
-  } catch {
-    return
+  } catch (error) {
+    throw new RemoteError('walk-failed', `无法读取本地目录：${root}：${error.message}`, 400)
   }
   for await (const entry of handle) {
     const childRel = rel === '' ? entry.name : `${rel}/${entry.name}`
-    if (!matcher(childRel)) continue
+    if (!matcher(childRel, entry.isDirectory())) continue
     if (entry.isDirectory()) yield* walkLocal(root, matcher, childRel)
     else if (entry.isFile()) yield childRel
   }
@@ -138,10 +139,14 @@ export class Transfer {
         if (signal?.aborted === true) throw new RemoteError('aborted', '传输已取消', 499)
         const length = Math.min(chunkSize, local.size - offset)
         const { bytesRead } = await handle.read(buffer, 0, length, offset)
-        if (bytesRead === 0) break
+        if (bytesRead === 0) throw new RemoteError('source-changed', '上传源文件在传输中发生变化', 409)
         await writeHandle(sftp, remoteHandle, buffer, bytesRead, offset)
         offset += bytesRead
         onProgress?.({ transferred: offset, total: local.size, path: remotePath })
+      }
+      const after = await handle.stat()
+      if (after.size !== local.size || after.mtimeMs !== local.mtimeMs) {
+        throw new RemoteError('source-changed', '上传源文件在传输中发生变化', 409)
       }
     } catch (error) {
       throw error instanceof RemoteError
@@ -153,15 +158,11 @@ export class Transfer {
     }
 
     try {
-      try {
-        await call(sftp, 'rename', part, remotePath)
-      } catch {
-        // Protocol v3 servers refuse to rename onto an existing file.
-        await call(sftp, 'unlink', remotePath).catch(() => {})
-        await call(sftp, 'rename', part, remotePath)
-      }
+      if (signal?.aborted === true) throw new RemoteError('aborted', '传输已取消', 499)
+      await renameRemote(sftp, part, remotePath)
     } catch (error) {
       // The part stays: the next attempt resumes from it instead of starting over.
+      if (error instanceof RemoteError) throw error
       throw new RemoteError('upload-failed', `上传失败 ${remotePath}：${error.message}`, 502)
     }
     const bits = mode ?? ((local.mode & 0o111) !== 0 ? 0o755 : 0o644)
@@ -195,23 +196,24 @@ export class Transfer {
     const resumedFrom = offset
 
     const remoteHandle = await openHandle(sftp, remotePath, 'r')
-    const handle = await openLocal(part, offset > 0 ? 'r+' : 'w')
+    let handle
     try {
+      handle = await openLocal(part, offset > 0 ? 'r+' : 'w')
       const buffer = Buffer.allocUnsafe(Math.min(chunkSize, Math.max(remote.size, 1)))
-      let empty = 0
       while (offset < remote.size) {
         if (signal?.aborted === true) throw new RemoteError('aborted', '传输已取消', 499)
         const length = Math.min(chunkSize, remote.size - offset)
         const bytesRead = await readHandle(sftp, remoteHandle, buffer, length, offset)
         if (bytesRead === 0) {
-          // The file shrank while we were reading it; stop rather than spinning.
-          empty += 1
-          if (empty > 2) break
-          continue
+          throw new RemoteError('source-changed', '下载源文件在传输中发生变化', 409)
         }
         await handle.write(buffer, 0, bytesRead, offset)
         offset += bytesRead
         onProgress?.({ transferred: offset, total: remote.size, path: remotePath })
+      }
+      const after = await this.files.stat(host, remotePath)
+      if (after === undefined || after.size !== remote.size || after.mtimeMs !== remote.mtimeMs) {
+        throw new RemoteError('source-changed', '下载源文件在传输中发生变化', 409)
       }
     } catch (error) {
       throw error instanceof RemoteError
@@ -219,17 +221,13 @@ export class Transfer {
         : new RemoteError('download-failed', `下载失败 ${remotePath}：${error.message}`, 502)
     } finally {
       await closeHandle(sftp, remoteHandle)
-      await handle.close()
+      await handle?.close()
     }
 
-    try {
-      await rename(part, localPath)
-    } catch {
-      await unlink(localPath).catch(() => {})
-      await rename(part, localPath)
-    }
+    if (signal?.aborted === true) throw new RemoteError('aborted', '传输已取消', 499)
+    await rename(part, localPath)
     const local = await stat(localPath).catch(() => undefined)
-    return { path: localPath, size: local?.size ?? remote.size, mtimeMs: local?.mtimeMs ?? Date.now(), resumedFrom }
+    return { path: localPath, size: local?.size ?? remote.size, mtimeMs: local?.mtimeMs ?? Date.now(), remoteMtimeMs: remote.mtimeMs, resumedFrom }
   }
 
   /**

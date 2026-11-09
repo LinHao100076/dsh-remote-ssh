@@ -12,7 +12,15 @@ DSH（DeepSeek Harness）的远程 SSH 插件：在侧边栏里看远端文件�
   <img src="docs/assets/terminal.png" width="330" alt="终端：tmux 持久会话，刷新后接回同一个 shell">
 </p>
 
-当前版本 **`0.7.1`** —— 没有密钥也能连，隔几层堡垒机也能连；新装的人第一次就能建连接。`0.4.0` 加远端内容搜索，`0.5.0` 加断点续传，`0.6.0` 补上 socks5 动态转发与 `-R` 反向转发，`0.6.1` 修掉「Node 20 上整份宿主端 bundle 加载即抛」的问题，`0.7.0` 补上密码 / keyboard-interactive（2FA）登录与多跳跳板链路，`0.7.1` 修掉「一台主机都没有时新建按钮点了没反应」，Node 20 / 22 / 24 都跑过。更早的版本在 Release 上都标为 beta，各自坏在哪、后来被哪个版本修掉，写在对应 Release 的说明里。完整变更见 [CHANGELOG](CHANGELOG.md)，下一步见 [ROADMAP](ROADMAP.md)。
+当前版本 **`0.7.2`** —— 没有密钥也能连，隔几层堡垒机也能连；新装的人第一次就能建连接。`0.4.0` 加远端内容搜索，`0.5.0` 加断点续传，`0.6.0` 补上 socks5 动态转发与 `-R` 反向转发，`0.6.1` 修掉「Node 20 上整份宿主端 bundle 加载即抛」的问题，`0.7.0` 补上密码 / keyboard-interactive（2FA）登录与多跳跳板链路，`0.7.1` 修掉「一台主机都没有时新建按钮点了没反应」，Node 20 / 22 / 24 都跑过。更早的版本在 Release 上都标为 beta，各自坏在哪、后来被哪个版本修掉，写在对应 Release 的说明里。完整变更见 [CHANGELOG](CHANGELOG.md)，下一步见 [ROADMAP](ROADMAP.md)。
+
+## 0.7.2 修复
+
+当前源码补上文件覆盖与自动同步的边界保护：传输不完整、源文件变化或重命名失败时保留已有目标；上传期间再次保存会补传最新版本，暂停/删除映射会取消旧任务。相对映射路径按会话目录解析，下载不能越过本地映射目录，include 支持子目录文件。下载基线分别记录两端时间，快速编辑也参与冲突检测。
+
+覆盖文件优先使用 OpenSSH 原子 rename；不支持覆盖 rename 的 SFTP 服务器会返回错误，不再先删除旧文件。手动“全部上传”仍是显式覆盖操作，不经过自动同步的逐文件冲突判断。新增安全与真实 watcher 回归测试已纳入 `npm test`，详见 [CHANGELOG](CHANGELOG.md)。
+
+界面按钮补上新建入口、设置页验证码、保存指纹、文件下载与搜索状态的回归；终端退出后可重连，新建终端标签对应独立 tmux 会话。浏览器交互测试使用实际客户端构建产物与隔离 API fixture，单独执行 `npx playwright install chromium`、`npm run test:ui`，不需要真实服务器。它验证界面行为和请求参数，不能替代真实 DSH/SSH 环境验收。
 
 ## 文档
 
@@ -46,9 +54,9 @@ lib/server.mjs     构建产物：宿主端 bundle（ssh2 / ws / chokidar 全打
 docs/design.md     架构取舍、平台发现、问题清单、里程碑
 docs/assets/       README 用的面板截图（由 ui/prototype.html 生成）
 ui/prototype.html  UI 原型（单文件，浏览器直接打开，可切深色）——界面以它为准
-test/              十六轮测试（见下）
+test/              十八轮测试（见下）
 scripts/           对着真实服务器跑的验收脚本；`dev-remote.mjs` 是本地假远端（exec 走真 shell，SFTP 只读）
-.github/           issue / PR 模板、CI（Node 20 / 22 / 24 各跑一遍十六轮测试）、dependabot
+.github/           issue / PR 模板、CI（Node 20 / 22 / 24 各跑一遍十八轮测试）、dependabot
 .gitleaks.toml     秘密扫描配置：只放行 ssh2 那段 Ed25519 探针密钥（见 SECURITY.md）
 ```
 
@@ -199,13 +207,15 @@ SOCKS5 只实现 `CONNECT`。`BIND` 和 `UDP ASSOCIATE` 会明确回 `0x07 comma
 ## 验证
 
 ```bash
-npm test             # 先自动 build（两个 bundle），再跑十六轮 Node 测试
+npm test             # 先自动 build（两个 bundle），再跑十八轮 Node 测试
 ```
 
 `npm test` 有 `pretest` 钩子，会先重建两个 bundle —— 否则渲染测试可能跑在旧产物上，改了代码却仍报绿。
 
 | 套件 | 覆盖 |
 | --- | --- |
+| `test/safety.mjs` | 映射根目录、include 子目录遍历、发布失败保留原文件、提前 EOF、源文件变化、取消、状态保存失败恢复 |
+| `test/sync.mjs` | 真实 chokidar：上传中再次保存、会话隔离、路径与符号链接越界、两端基线、冲突、暂停、删除与待执行任务清理 |
 | `test/smoke.mjs` | 路由、主机、映射、转发规则的增删与校验、落盘、排除规则、终端帧 |
 | `test/ssh.mjs` | 握手、认证、exec、PTY、TOFU、错误分类、连接复用。跑两遍：一遍对 `src/`，一遍对 `lib/server.mjs`（`--bundle`），证明内联进来的 `ssh2` 还能握手 |
 | `test/auth.mjs` | 起真的 `ssh2` 服务端：只开 keyboard-interactive 的机器、密码 + OTP 两个 prompt、猜错后第二轮改成问人、后台重连没人可问（`needs-credential`）、提问超时、跳板与目标机各用各的凭据 |
@@ -323,7 +333,7 @@ dsh plugin --profile <name> allow-version dsh-better-sidebar@0.28.0 \
 - 安全相关：走 [SECURITY.md](SECURITY.md) 的私密渠道，不要开 public issue。
 - 想提功能：先看 [ROADMAP.md](ROADMAP.md)，里面既有已经排队的，也有明确不做的。
 
-`npm test` 是这个仓库的底线：十六轮全绿才合。关键协议（转发、SOCKS5、终端 WebSocket）不许用测试桩替代，历史上就是这么漏掉过一个「一点终端就崩宿主」的 bug。
+`npm test` 是这个仓库的底线：十八轮全绿才合。关键协议（转发、SOCKS5、终端 WebSocket）不许用测试桩替代，历史上就是这么漏掉过一个「一点终端就崩宿主」的 bug。
 
 ## 许可证
 
