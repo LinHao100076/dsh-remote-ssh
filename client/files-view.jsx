@@ -449,7 +449,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
     if (needle === '') return text
     let at = -1
     let length = needle.length
-    if (regex) {
+    if (searchMode === 'content' && regex) {
       try {
         const match = new RegExp(needle, caseSensitive ? '' : 'i').exec(text)
         if (match !== null && match[0] !== '') { at = match.index; length = match[0].length }
