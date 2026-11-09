@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-ssh",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Remote SSH for DSH: browse remote files, open remote terminals, and mirror local agent edits to a remote server with per-mapping sync direction.",
   "keywords": [
     "dsh",
@@ -60,7 +60,7 @@
     "prepack": "node build.mjs",
     "pack:rel": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\" && npm pack --pack-destination dist",
     "pretest": "node build.mjs",
-    "test": "node test/smoke.mjs && node test/api.mjs && node test/ssh.mjs && node test/ssh.mjs --bundle && node test/auth.mjs && node test/jump.mjs && node test/files.mjs && node test/transfer.mjs && node test/safety.mjs && node test/sync.mjs && node test/forward.mjs && node test/socks5.mjs && node test/gate.mjs && node test/render.mjs && node test/native.mjs && node test/styles.mjs && node test/ws.mjs && node test/search.mjs",
+    "test": "node test/smoke.mjs && node test/api.mjs && node test/ssh.mjs && node test/ssh.mjs --bundle && node test/auth.mjs && node test/jump.mjs && node test/files.mjs && node test/transfer.mjs && node test/browser-uploads.mjs && node test/safety.mjs && node test/sync.mjs && node test/forward.mjs && node test/socks5.mjs && node test/gate.mjs && node test/render.mjs && node test/native.mjs && node test/styles.mjs && node test/ws.mjs && node test/search.mjs",
     "test:smoke": "node test/smoke.mjs",
     "test:ui": "playwright test test/ui-buttons.spec.mjs --workers=1",
     "test:ssh": "node test/ssh.mjs && node test/ssh.mjs --bundle",

@@ -128,7 +128,7 @@ function jumpWithSecrets(jump, secrets, index) {
  * proxy that throws `cannot get property "x" without inject` for anything not
  * listed in the plugin's `inject`, which a plain-object test context hides.
  */
-export function buildApi({ ctx, store, pool, files, transfer, engine, forward, search, version = '0.0.0' }) {
+export function buildApi({ ctx, store, pool, files, transfer, uploads, engine, forward, search, version = '0.0.0' }) {
   /** Stored host row, or a transient one built from a draft. */
   function hostOf(payload, { allowDraft = false } = {}) {
     // Passwords and passphrases arrive per request and never touch the store.
@@ -337,7 +337,8 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
       const requested = typeof payload.path === 'string' ? payload.path.trim() : ''
       const root = requested === '' ? await files.home(host) : requested
       const caseMode = ['smart', 'sensitive', 'insensitive'].includes(payload.case) ? payload.case : 'smart'
-      return search.search(host, {
+      const method = payload.mode === 'name' ? 'names' : 'search'
+      return search[method](host, {
         root,
         query: requireString(payload, 'query'),
         case: caseMode,
@@ -369,6 +370,22 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
         mode: typeof payload.mode === 'number' ? payload.mode : undefined,
       })
     },
+
+    'fs.upload.begin': async (payload) => uploads.begin(
+      hostForSession(payload), payload.sessionId ?? 'default', requireString(payload, 'path'), payload.size,
+    ),
+
+    'fs.upload.chunk': async (payload) => uploads.chunk(
+      hostForSession(payload).id, payload.sessionId ?? 'default', requireString(payload, 'uploadId'), payload.offset, payload.data,
+    ),
+
+    'fs.upload.finish': async (payload) => uploads.finish(
+      hostForSession(payload).id, payload.sessionId ?? 'default', requireString(payload, 'uploadId'),
+    ),
+
+    'fs.upload.abort': async (payload) => uploads.abort(
+      hostForSession(payload).id, payload.sessionId ?? 'default', requireString(payload, 'uploadId'),
+    ),
 
     'fs.mkdir': async (payload) => {
       const host = hostForSession(payload)
