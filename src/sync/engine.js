@@ -14,13 +14,12 @@
  *   traffic goes through `pushAll`, which parallelizes inside `Transfer`.
  * @module dsh-remote-ssh/sync/engine
  */
-import { stat } from 'node:fs/promises'
-import { join, relative } from 'node:path'
+import { stat, realpath } from 'node:fs/promises'
+import { join, relative, resolve, isAbsolute } from 'node:path'
 import chokidar from 'chokidar'
 import { createMatcher, normalizeMapping } from './mapping.js'
 import { Debouncer, joinRemote, nextId, sleep, toLocalPath } from '../util.js'
 
-const CONFLICT_SLACK_MS = 2000
 const MAX_TASKS = 120
 
 /** Mapping-relative POSIX path for a local absolute path, `''` for the root. */
@@ -44,12 +43,14 @@ export class SyncEngine {
   #session(sessionId) {
     const existing = this.#sessions.get(sessionId)
     if (existing !== undefined) return existing
-    const mappings = this.store.mappings(sessionId).map((mapping) => ({ ...mapping }))
+    const mappings = this.store.mappings(sessionId).map((mapping) => normalizeMapping(mapping, mapping.sessionCwd))
     const session = {
       id: sessionId,
       mappings,
       matchers: new Map(mappings.map((mapping) => [mapping.id, createMatcher(mapping)])),
       watchers: new Map(),
+      controls: new Map(),
+      pending: new Map(),
       queue: new Map(),
       conflicts: new Map(),
       draining: false,
@@ -97,6 +98,12 @@ export class SyncEngine {
     const mapping = normalizeMapping(input, sessionCwd)
     if (mapping.hostId === '') throw new Error('请选择主机')
     const index = session.mappings.findIndex((item) => item.id === mapping.id)
+    const previous = session.mappings[index]
+    if (previous && ['hostId', 'localRoot', 'remoteRoot'].some((field) => previous[field] !== mapping[field])) {
+      for (const key of Object.keys(this.store.baselines(sessionId))) {
+        if (key.startsWith(`${mapping.id}:`)) this.store.dropBaseline(sessionId, key)
+      }
+    }
     if (index === -1) session.mappings.push(mapping)
     else session.mappings[index] = mapping
     session.matchers.set(mapping.id, createMatcher(mapping))
@@ -108,15 +115,11 @@ export class SyncEngine {
   /** Remove a mapping, its watcher, and its baselines. */
   async remove(sessionId, mappingId) {
     const session = this.#session(sessionId)
-    session.watchers.get(mappingId)?.close?.()
-    session.watchers.delete(mappingId)
+    await this.#stop(session, mappingId)
     session.mappings = session.mappings.filter((mapping) => mapping.id !== mappingId)
     session.matchers.delete(mappingId)
     for (const key of Object.keys(this.store.baselines(sessionId))) {
       if (key.startsWith(`${mappingId}:`)) this.store.dropBaseline(sessionId, key)
-    }
-    for (const [key, task] of session.queue) {
-      if (task.mappingId === mappingId) session.queue.delete(key)
     }
     await this.store.setMappings(sessionId, session.mappings.map(stripRuntime))
     return this.list(sessionId)
@@ -129,11 +132,31 @@ export class SyncEngine {
     return this.list(sessionId)
   }
 
+  async #stop(session, mappingId) {
+    session.controls.get(mappingId)?.abort()
+    session.controls.delete(mappingId)
+    for (const [key, conflict] of session.conflicts) {
+      if (conflict.mappingId === mappingId) session.conflicts.delete(key)
+    }
+    for (const [key, id] of session.pending) {
+      if (id !== mappingId) continue
+      this.#debounce.drop(key)
+      session.pending.delete(key)
+    }
+    for (const [key, task] of session.queue) {
+      if (task.mappingId === mappingId) session.queue.delete(key)
+    }
+    const watcher = session.watchers.get(mappingId)
+    session.watchers.delete(mappingId)
+    await watcher?.close()
+  }
+
   async #restart(sessionId, mapping) {
     const session = this.#session(sessionId)
-    const existing = session.watchers.get(mapping.id)
-    if (existing !== undefined) { await existing.close(); session.watchers.delete(mapping.id) }
+    await this.#stop(session, mapping.id)
     if (mapping.enabled === false || mapping.policy === 'off' || mapping.direction === 'pull') return
+    const controller = new AbortController()
+    session.controls.set(mapping.id, controller)
     const matcher = session.matchers.get(mapping.id) ?? createMatcher(mapping)
     session.matchers.set(mapping.id, matcher)
     try {
@@ -141,28 +164,45 @@ export class SyncEngine {
         ignoreInitial: true,
         persistent: true,
         followSymlinks: false,
-        ignored: (candidate) => {
+        ignored: (candidate, stats) => {
           const rel = relOf(mapping.localRoot, candidate)
           if (rel === '' || rel === '.') return false
           if (rel.split('/').includes('.git')) return true
-          return !matcher(rel)
+          return !matcher(rel, stats === undefined || stats.isDirectory())
         },
         awaitWriteFinish: { stabilityThreshold: 180, pollInterval: 40 },
       })
-      watcher.on('add', (path) => this.#schedule(sessionId, mapping, path))
-      watcher.on('change', (path) => this.#schedule(sessionId, mapping, path))
-      watcher.on('unlink', (path) => this.#onUnlink(sessionId, mapping, path))
+      watcher.on('add', (path) => { if (!controller.signal.aborted) this.#schedule(sessionId, mapping, path) })
+      watcher.on('change', (path) => { if (!controller.signal.aborted) this.#schedule(sessionId, mapping, path) })
+      watcher.on('unlink', (path) => { if (!controller.signal.aborted) this.#onUnlink(sessionId, mapping, path) })
       watcher.on('error', (error) => this.onEvent({ type: 'watch-error', sessionId, mappingId: mapping.id, message: String(error?.message ?? error) }))
       session.watchers.set(mapping.id, watcher)
+      await new Promise((resolve) => {
+        const finish = () => {
+          watcher.off('ready', finish)
+          watcher.off('error', finish)
+          controller.signal.removeEventListener('abort', finish)
+          resolve()
+        }
+        watcher.once('ready', finish)
+        watcher.once('error', finish)
+        controller.signal.addEventListener('abort', finish, { once: true })
+        if (controller.signal.aborted) finish()
+      })
     } catch (error) {
       this.onEvent({ type: 'watch-error', sessionId, mappingId: mapping.id, message: String(error?.message ?? error) })
     }
   }
 
   #schedule(sessionId, mapping, absolute) {
+    const session = this.#session(sessionId)
     const rel = relOf(mapping.localRoot, absolute)
-    if (rel === '') return
-    this.#debounce.push(`${mapping.id}:${rel}`, () => {
+    if (rel === '' || !session.matchers.get(mapping.id)?.(rel)) return
+    const key = JSON.stringify([sessionId, mapping.id, rel])
+    session.pending.set(key, mapping.id)
+    this.#debounce.push(key, () => {
+      session.pending.delete(key)
+      if (session.mappings.find((item) => item.id === mapping.id) !== mapping) return
       this.#enqueue(sessionId, mapping, rel, join(mapping.localRoot, rel))
     })
   }
@@ -171,6 +211,9 @@ export class SyncEngine {
     const rel = relOf(mapping.localRoot, absolute)
     if (rel === '') return
     const key = `${mapping.id}:${rel}`
+    const pendingKey = JSON.stringify([sessionId, mapping.id, rel])
+    this.#debounce.drop(pendingKey)
+    this.#session(sessionId).pending.delete(pendingKey)
     this.store.dropBaseline(sessionId, key)
     const session = this.#session(sessionId)
     session.queue.delete(key)
@@ -192,8 +235,9 @@ export class SyncEngine {
       rel,
       localPath,
       remotePath: joinRemote(mapping.remoteRoot, rel),
+      signal: session.controls.get(mapping.id)?.signal,
       state: 'queued',
-      attempts: previous?.attempts ?? 0,
+      attempts: 0,
       size: 0,
       startedAt: 0,
       finishedAt: 0,
@@ -222,6 +266,11 @@ export class SyncEngine {
         next.state = 'uploading'
         next.startedAt = Date.now()
         await this.#run(sessionId, next)
+        if (next.requeue && !next.signal?.aborted && next.state !== 'conflict') {
+          next.requeue = false
+          next.attempts = 0
+          next.state = 'queued'
+        }
       }
     } finally {
       session.draining = false
@@ -247,10 +296,11 @@ export class SyncEngine {
       const key = `${task.mappingId}:${task.rel}`
       const baseline = this.store.baselines(sessionId)[key]
       const remote = await this.files.stat(host, task.remotePath)
+      if (task.signal?.aborted) return
       const remoteDrifted = remote !== undefined && baseline !== undefined
-        && Math.abs(remote.mtimeMs - baseline.remoteMtimeMs) > CONFLICT_SLACK_MS
+        && (remote.mtimeMs !== baseline.remoteMtimeMs || remote.size !== baseline.size)
       if (remoteDrifted) {
-        const localChanged = Math.abs(local.mtimeMs - baseline.localMtimeMs) > CONFLICT_SLACK_MS
+        const localChanged = local.mtimeMs !== baseline.localMtimeMs
           || local.size !== baseline.size
         if (!localChanged) {
           task.state = 'done'
@@ -261,7 +311,8 @@ export class SyncEngine {
         this.#raiseConflict(session, task, mapping, local, remote)
         return
       }
-      const info = await this.transfer.uploadFile(host, task.localPath, task.remotePath)
+      const info = await this.transfer.uploadFile(host, task.localPath, task.remotePath, { signal: task.signal })
+      if (task.signal?.aborted) return
       task.state = 'done'
       task.size = info.size
       task.finishedAt = Date.now()
@@ -274,6 +325,7 @@ export class SyncEngine {
       session.stats.bytes += info.size
       session.stats.lastAt = Date.now()
     } catch (error) {
+      if (task.signal?.aborted) return
       task.attempts += 1
       task.error = String(error?.message ?? error)
       if (task.attempts < 2) {
@@ -330,7 +382,7 @@ export class SyncEngine {
       const info = await this.transfer.downloadFile(host, conflict.remotePath, conflict.localPath)
       this.store.setBaseline(sessionId, key, {
         localMtimeMs: info.mtimeMs,
-        remoteMtimeMs: conflict.remoteMtimeMs,
+        remoteMtimeMs: info.remoteMtimeMs,
         size: info.size,
       })
     }
@@ -367,16 +419,35 @@ export class SyncEngine {
     if (mapping === undefined) throw new Error('映射不存在')
     const host = this.store.host(mapping.hostId)
     if (host === undefined) throw new Error('主机已被删除')
-    const clean = relPosix(rel)
+    const clean = toLocalPath(rel)
+    if (clean.includes('\0') || clean.startsWith('/') || /^[a-z]:/i.test(clean)
+      || clean.split('/').includes('..')) throw new Error('文件路径必须位于映射目录内')
     if (clean === '') throw new Error('缺少文件路径')
+    const root = await realpath(mapping.localRoot)
+    const localPath = resolve(root, clean)
+    // Resolve existing ancestors as well as existing files to reject symlink escapes.
+    let ancestor = localPath
+    for (;;) {
+      try {
+        const actual = await realpath(ancestor)
+        const within = relative(root, actual)
+        if (within === '..' || within.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(within)) {
+          throw new Error('文件路径必须位于映射目录内')
+        }
+        break
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error
+        ancestor = resolve(ancestor, '..')
+      }
+    }
     const info = await this.transfer.downloadFile(
       host,
       joinRemote(mapping.remoteRoot, clean),
-      join(mapping.localRoot, clean),
+      localPath,
     )
     this.store.setBaseline(sessionId, `${mappingId}:${clean}`, {
       localMtimeMs: info.mtimeMs,
-      remoteMtimeMs: info.mtimeMs,
+      remoteMtimeMs: info.remoteMtimeMs,
       size: info.size,
     })
     return { rel: clean, size: info.size, mtimeMs: info.mtimeMs }
@@ -388,7 +459,7 @@ export class SyncEngine {
     const deadline = Date.now() + timeoutMs
     for (;;) {
       const busy = [...session.queue.values()].some((task) => task.state === 'queued' || task.state === 'uploading')
-      if (!busy) return this.list(sessionId)
+      if (!busy && session.pending.size === 0) return this.list(sessionId)
       if (Date.now() > deadline) throw new Error('同步队列在超时前未完成')
       await sleep(120)
     }
@@ -403,8 +474,7 @@ export class SyncEngine {
   async dispose() {
     this.#debounce.dispose()
     for (const session of this.#sessions.values()) {
-      for (const watcher of session.watchers.values()) await watcher.close().catch(() => {})
-      session.watchers.clear()
+      for (const id of [...session.watchers.keys()]) await this.#stop(session, id)
     }
     this.#sessions.clear()
   }
@@ -413,9 +483,4 @@ export class SyncEngine {
 /** Persistable shape: drop fields the engine added at runtime. */
 function stripRuntime(mapping) {
   return { ...mapping }
-}
-
-/** POSIX-normalize a relative path fragment from `path.relative`. */
-function relPosix(fragment) {
-  return toLocalPath(fragment).replace(/^\.\//, '').replace(/^\/+/, '')
 }

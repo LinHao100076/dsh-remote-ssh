@@ -143,19 +143,23 @@ export class Store {
   /** Debounced, serialized, atomic write. */
   touch() {
     clearTimeout(this.#timer)
-    this.#timer = setTimeout(() => { void this.flush() }, 250)
+    this.#timer = setTimeout(() => { void this.flush().catch(() => {}) }, 250)
   }
 
   /** Write now (plugin unload, or after an awaited mutation in a test). */
   async flush() {
     clearTimeout(this.#timer)
     const body = JSON.stringify(this.#state, null, 2)
-    this.#writing = this.#writing.then(async () => {
+    const writing = this.#writing.then(async () => {
       await mkdir(dirname(this.path), { recursive: true })
       const tmp = `${this.path}.tmp`
       await writeFile(tmp, body, 'utf8')
       await rename(tmp, this.path)
-    }).catch(() => {})
-    return this.#writing
+    })
+    // Keep the queue recoverable, but do not report a failed write as success.
+    this.#writing = writing.catch((error) => {
+      console.error('[dsh-remote-ssh] 状态保存失败：', error.message)
+    })
+    return writing
   }
 }

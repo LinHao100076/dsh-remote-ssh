@@ -14,6 +14,12 @@ DSH（DeepSeek Harness）的远程 SSH 插件：在侧边栏里看远端文件�
 
 当前版本 **`0.7.0`** —— 没有密钥也能连，隔几层堡垒机也能连。`0.4.0` 加远端内容搜索，`0.5.0` 加断点续传，`0.6.0` 补上 socks5 动态转发与 `-R` 反向转发，`0.6.1` 修掉「Node 20 上整份宿主端 bundle 加载即抛」的问题，`0.7.0` 补上密码 / keyboard-interactive（2FA）登录与多跳跳板链路，Node 20 / 22 / 24 都跑过。更早的版本在 Release 上都标为 beta，各自坏在哪、后来被哪个版本修掉，写在对应 Release 的说明里。完整变更见 [CHANGELOG](CHANGELOG.md)，下一步见 [ROADMAP](ROADMAP.md)。
 
+## 未发布修复
+
+当前源码补上文件覆盖与自动同步的边界保护：传输不完整、源文件变化或重命名失败时保留已有目标；上传期间再次保存会补传最新版本，暂停/删除映射会取消旧任务。相对映射路径按会话目录解析，下载不能越过本地映射目录，include 支持子目录文件。下载基线分别记录两端时间，快速编辑也参与冲突检测。
+
+覆盖文件优先使用 OpenSSH 原子 rename；不支持覆盖 rename 的 SFTP 服务器会返回错误，不再先删除旧文件。手动“全部上传”仍是显式覆盖操作，不经过自动同步的逐文件冲突判断。新增安全与真实 watcher 回归测试已纳入 `npm test`，详见 [CHANGELOG](CHANGELOG.md)。
+
 ## 文档
 
 | 文件 | 内容 |
@@ -206,6 +212,8 @@ npm test             # 先自动 build（两个 bundle），再跑十五轮 Node
 
 | 套件 | 覆盖 |
 | --- | --- |
+| `test/safety.mjs` | 映射根目录、include 子目录遍历、发布失败保留原文件、提前 EOF、源文件变化、取消、状态保存失败恢复 |
+| `test/sync.mjs` | 真实 chokidar：上传中再次保存、会话隔离、路径与符号链接越界、两端基线、冲突、暂停、删除与待执行任务清理 |
 | `test/smoke.mjs` | 路由、主机、映射、转发规则的增删与校验、落盘、排除规则、终端帧 |
 | `test/ssh.mjs` | 握手、认证、exec、PTY、TOFU、错误分类、连接复用。跑两遍：一遍对 `src/`，一遍对 `lib/server.mjs`（`--bundle`），证明内联进来的 `ssh2` 还能握手 |
 | `test/auth.mjs` | 起真的 `ssh2` 服务端：只开 keyboard-interactive 的机器、密码 + OTP 两个 prompt、猜错后第二轮改成问人、后台重连没人可问（`needs-credential`）、提问超时、跳板与目标机各用各的凭据 |

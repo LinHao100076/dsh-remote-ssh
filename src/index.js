@@ -149,7 +149,7 @@ export async function apply(ctx, config = {}) {
     void forward.dispose()
     void engine.dispose()
     pool.dispose()
-    void store.flush()
+    void store.flush().catch(() => {})
   }, 'dsh-remote-ssh: teardown')
 
   await registerTools(ctx, { store, pool, files, transfer, engine })

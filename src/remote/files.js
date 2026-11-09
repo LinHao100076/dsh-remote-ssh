@@ -2,13 +2,15 @@
  * SFTP file operations for one remote host.
  *
  * Every mutation lands through a temp sibling + rename so a remote process
- * never observes a half-written file (`sftp.rename` is retried with an
- * explicit unlink for servers that refuse overwriting). Reads are bounded and
+ * never observes a half-written file (OpenSSH atomic rename is preferred;
+ * failures never unlink an existing destination). Reads are bounded and
  * binary-detected here rather than in the UI, so the client only ever receives
  * text it can render.
  * @module dsh-remote-ssh/remote/files
  */
 import { RemoteError } from '../ssh/pool.js'
+import { randomUUID } from 'node:crypto'
+import { renameRemote } from './publish.js'
 import { call, dirnameRemote, joinRemote, looksBinary } from '../util.js'
 
 const S_IFMT = 0o170000
@@ -146,16 +148,10 @@ export class RemoteFiles {
       throw new RemoteError('stale', '远端文件已被改动，请先下载或对比', 409, { remoteMtimeMs: current.mtimeMs })
     }
     const buffer = Buffer.from(text, 'utf8')
-    const tmp = `${path}.dsh-tmp-${Date.now().toString(36)}`
+    const tmp = `${path}.dsh-tmp-${randomUUID()}`
     try {
       await call(sftp, 'writeFile', tmp, buffer, { mode: mode ?? current?.mode ?? 0o644 })
-      try {
-        await call(sftp, 'rename', tmp, path)
-      } catch {
-        // Protocol v3 servers refuse to rename onto an existing file.
-        await call(sftp, 'unlink', path).catch(() => {})
-        await call(sftp, 'rename', tmp, path)
-      }
+      await renameRemote(sftp, tmp, path)
     } catch (error) {
       await call(sftp, 'unlink', tmp).catch(() => {})
       throw sftpError(error, path)
@@ -175,15 +171,10 @@ export class RemoteFiles {
    */
   async writeBytes(host, path, buffer, { mode } = {}) {
     const sftp = await this.pool.sftp(host)
-    const tmp = `${path}.dsh-tmp-${Date.now().toString(36)}`
+    const tmp = `${path}.dsh-tmp-${randomUUID()}`
     try {
       await call(sftp, 'writeFile', tmp, buffer, { mode: mode ?? 0o644 })
-      try {
-        await call(sftp, 'rename', tmp, path)
-      } catch {
-        await call(sftp, 'unlink', path).catch(() => {})
-        await call(sftp, 'rename', tmp, path)
-      }
+      await renameRemote(sftp, tmp, path)
     } catch (error) {
       await call(sftp, 'unlink', tmp).catch(() => {})
       throw sftpError(error, path)
@@ -241,12 +232,7 @@ export class RemoteFiles {
   async rename(host, from, to) {
     const sftp = await this.pool.sftp(host)
     await this.mkdir(host, dirnameRemote(to)).catch(() => {})
-    try {
-      await call(sftp, 'rename', from, to)
-    } catch {
-      await call(sftp, 'unlink', to).catch(() => {})
-      await call(sftp, 'rename', from, to)
-    }
+    await renameRemote(sftp, from, to)
     return { from, to }
   }
 
