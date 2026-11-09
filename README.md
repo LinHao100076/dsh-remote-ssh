@@ -20,6 +20,8 @@ DSH（DeepSeek Harness）的远程 SSH 插件：在侧边栏里看远端文件�
 
 覆盖文件优先使用 OpenSSH 原子 rename；不支持覆盖 rename 的 SFTP 服务器会返回错误，不再先删除旧文件。手动“全部上传”仍是显式覆盖操作，不经过自动同步的逐文件冲突判断。新增安全与真实 watcher 回归测试已纳入 `npm test`，详见 [CHANGELOG](CHANGELOG.md)。
 
+界面按钮补上新建入口、设置页验证码、保存指纹、文件下载与搜索状态的回归；终端退出后可重连，新建终端标签对应独立 tmux 会话。浏览器交互测试使用实际客户端构建产物与隔离 API fixture，单独执行 `npx playwright install chromium`、`npm run test:ui`，不需要真实服务器。它验证界面行为和请求参数，不能替代真实 DSH/SSH 环境验收。
+
 ## 文档
 
 | 文件 | 内容 |

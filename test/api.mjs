@@ -77,6 +77,30 @@ assert.equal(seen[3].fingerprint, 'SHA256:pinned', 'editing a host must keep its
 await api['hosts.connect']({ draft: { ...draft, id: SAVED.id, fingerprint: 'SHA256:new' }, auth: { password: 'p' } })
 assert.equal(seen[4].fingerprint, 'SHA256:new')
 
+/* A stale browser form must not erase keys pinned after the form was loaded. */
+const savedRows = []
+const forgotten = []
+const saveApi = buildApi({ ctx: {}, pool, forward, files: { ...files, forget: (id) => forgotten.push(id) },
+  store: {
+    host: () => ({ ...SAVED, jump: { hops: [
+      { host: 'a', port: 22, fingerprint: 'SHA256:jump-a' },
+      { host: 'b', port: 2222, fingerprint: 'SHA256:jump-b' },
+    ] } }),
+    upsertHost: async row => savedRows.push(row), hosts: () => savedRows,
+  },
+})
+await saveApi['hosts.save']({ host: { ...draft, id: SAVED.id, jump: { hops: [
+  { host: 'b', port: 2222 }, { host: 'a', port: 22 },
+] } } })
+assert.equal(savedRows[0].fingerprint, SAVED.fingerprint)
+assert.deepEqual(savedRows[0].jump.hops.map(h => h.fingerprint), ['SHA256:jump-b', 'SHA256:jump-a'])
+assert.deepEqual(forgotten, [SAVED.id], 'editing connection invalidates old environment facts')
+await saveApi['hosts.connect']({ draft: { ...draft, id: SAVED.id, jump: { hops: [
+  { host: 'b', port: 2222 }, { host: 'a', port: 22 },
+] } } })
+assert.deepEqual(seen.at(-1).jump.hops.map(h => h.fingerprint), ['SHA256:jump-b', 'SHA256:jump-a'])
+seen.pop()
+
 /* ── jump chains ───────────────────────────────────────────────────────── */
 
 /* hop order is traffic order, so it must survive the trip through the API */

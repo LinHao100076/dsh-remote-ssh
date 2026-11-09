@@ -62,6 +62,7 @@
     "pretest": "node build.mjs",
     "test": "node test/smoke.mjs && node test/api.mjs && node test/ssh.mjs && node test/ssh.mjs --bundle && node test/auth.mjs && node test/jump.mjs && node test/files.mjs && node test/transfer.mjs && node test/safety.mjs && node test/sync.mjs && node test/forward.mjs && node test/socks5.mjs && node test/render.mjs && node test/native.mjs && node test/styles.mjs && node test/ws.mjs && node test/search.mjs",
     "test:smoke": "node test/smoke.mjs",
+    "test:ui": "playwright test test/ui-buttons.spec.mjs --workers=1",
     "test:ssh": "node test/ssh.mjs && node test/ssh.mjs --bundle",
     "test:files": "node test/files.mjs",
     "test:transfer": "node test/transfer.mjs",
@@ -87,8 +88,8 @@
       "optional": true
     }
   },
-  "dependencies": {},
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
     "chokidar": "^4.0.3",

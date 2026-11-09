@@ -84,6 +84,16 @@ function jumpRow(raw) {
   return { hops: list.map((hop, index) => hopRow(hop, index)) }
 }
 
+/** Browser forms can predate TOFU pinning; omitted pins must survive edits/reordering. */
+function inheritJumpPins(jump, previous) {
+  if (jump === undefined) return undefined
+  const pinned = jumpRow(previous)?.hops ?? []
+  return { hops: jump.hops.map((hop) => ({
+    ...hop,
+    fingerprint: hop.fingerprint ?? pinned.find((old) => old.host === hop.host && old.port === hop.port)?.fingerprint,
+  })) }
+}
+
 /** Per-hop secrets from one request payload, merged onto the stored chain. */
 function jumpWithSecrets(jump, secrets, index) {
   const row = jump.hops[index]
@@ -155,7 +165,7 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
         user: draft.user,
         alias: draft.alias,
         proxyJump: draft.proxyJump,
-        jump: jumpRow(draft.jump),
+        jump: inheritJumpPins(jumpRow(draft.jump), edited?.jump),
         fingerprint: draft.fingerprint ?? edited?.fingerprint,
         auth: draft.auth ?? { type: 'agent' },
       })
@@ -197,6 +207,7 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
       const host = payload.host ?? payload
       const address = requireString(host, 'host')
       const user = requireString(host, 'user')
+      const previous = typeof host.id === 'string' ? store.host(host.id) : undefined
       const row = {
         id: typeof host.id === 'string' && host.id !== '' ? host.id : nextId('host'),
         name: typeof host.name === 'string' && host.name !== '' ? host.name : address,
@@ -206,7 +217,7 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
         alias: typeof host.alias === 'string' ? host.alias : undefined,
         proxyJump: typeof host.proxyJump === 'string' && host.proxyJump !== '' ? host.proxyJump : undefined,
         jump: jumpRow(host.jump),
-        fingerprint: typeof host.fingerprint === 'string' ? host.fingerprint : undefined,
+        fingerprint: typeof host.fingerprint === 'string' ? host.fingerprint : previous?.fingerprint,
         auth: {
           type: AUTH_TYPES.includes(host.auth?.type) ? host.auth.type : 'agent',
           keyPath: typeof host.auth?.keyPath === 'string' ? host.auth.keyPath : undefined,
@@ -219,7 +230,10 @@ export function buildApi({ ctx, store, pool, files, transfer, engine, forward, s
       if (!Number.isInteger(row.port) || row.port <= 0 || row.port > 65535) {
         throw new ApiError('bad-port', '端口必须是 1-65535', 400)
       }
+      row.jump = inheritJumpPins(row.jump, previous?.jump)
       await store.upsertHost(row)
+      files.forget?.(row.id)
+      search?.forget?.(row.id)
       const existing = store.host(row.id)
       if (existing !== undefined) {
         // The row changed, so the tunnel may point at a different server: close

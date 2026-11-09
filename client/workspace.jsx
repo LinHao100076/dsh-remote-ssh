@@ -269,8 +269,9 @@ export function Workspace(props) {
   }, [ctx, flash])
 
   const onDeleted = useCallback(async (deletedId) => {
-    await refreshHosts(ctx)
-    if (deletedId === hostId) setHostId('')
+    secretStore.delete(deletedId)
+    const value = await refreshHosts(ctx)
+    if (deletedId === hostId) setHostId(value.hosts?.[0]?.id ?? '')
     setCreating(false)
     setView('files')
   }, [ctx, hostId])
@@ -278,7 +279,7 @@ export function Workspace(props) {
   /* ── derived ────────────────────────────────────────────────────────── */
 
   const pending = sync.queue.filter((task) => task.state === 'queued' || task.state === 'uploading').length
-  const gate = host === undefined || (GATED.has(view) && !live)
+  const gate = busyStatus || (!creating && (host === undefined || (GATED.has(view) && !live)))
   const meta = !host
     ? '未选择主机'
     : busyStatus

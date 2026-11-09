@@ -14,6 +14,8 @@
  * @module dsh-remote-ssh/ws/term
  */
 
+import { createHash } from 'node:crypto'
+
 /** Clamp a numeric query parameter. */
 function bounded(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value ?? ''), 10)
@@ -22,7 +24,10 @@ function bounded(value, fallback, min, max) {
 }
 
 /** tmux session name for a host: stable across reloads, safe as an argv token. */
-function tmuxSessionName(hostId) {
+function tmuxSessionName(hostId, sessionId, terminalId) {
+  if (terminalId) {
+    return `dsh-${createHash('sha256').update(JSON.stringify([hostId, sessionId, terminalId])).digest('hex').slice(0, 24)}`
+  }
   return `dsh-${String(hostId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 14) || 'remote'}`
 }
 
@@ -61,7 +66,7 @@ export async function attachTerminal({ ws, url, store, pool, files }) {
     const info = await files.info(host)
     const useTmux = tmuxMode === 'auto' && info.tmux
     channel = await pool.channel(host, {
-      command: useTmux ? `tmux new -A -s ${tmuxSessionName(hostId)}` : undefined,
+      command: useTmux ? `tmux new -A -s ${tmuxSessionName(hostId, params.get('sessionId'), params.get('terminalId'))}` : undefined,
       cols,
       rows,
     })
