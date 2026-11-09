@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-ssh",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Remote SSH for DSH: browse remote files, open remote terminals, and mirror local agent edits to a remote server with per-mapping sync direction.",
   "keywords": [
     "dsh",
@@ -58,7 +58,7 @@
     "build": "node build.mjs",
     "check": "node --check src/index.js && node --check lib/client.js",
     "prepack": "node build.mjs",
-    "pack:rel": "npm pack --pack-destination dist",
+    "pack:rel": "node -e \"require('node:fs').mkdirSync('dist', { recursive: true })\" && npm pack --pack-destination dist",
     "pretest": "node build.mjs",
     "test": "node test/smoke.mjs && node test/api.mjs && node test/ssh.mjs && node test/ssh.mjs --bundle && node test/auth.mjs && node test/jump.mjs && node test/files.mjs && node test/transfer.mjs && node test/safety.mjs && node test/sync.mjs && node test/forward.mjs && node test/socks5.mjs && node test/gate.mjs && node test/render.mjs && node test/native.mjs && node test/styles.mjs && node test/ws.mjs && node test/search.mjs",
     "test:smoke": "node test/smoke.mjs",

@@ -41,7 +41,7 @@ export { SshPool, WebSocketServer }
 /** Routes, sessions and remote terminals need these services before mounting. */
 export const inject = ['webServer', 'sessions']
 
-const VERSION = '0.7.1'
+const VERSION = '0.7.2'
 
 /**
  * Mount the plugin.
