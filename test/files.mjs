@@ -66,6 +66,18 @@ await files.mkdir(host, '/srv/app/deep/nested/dir')
 assert.ok(sftp.dirs.has('/srv/app/deep/nested/dir'))
 await files.mkdir(host, '/srv/app/deep')
 
+/* Existing files and arbitrary SFTP mkdir failures must not look successful. */
+const originalMkdir = sftp.mkdir.bind(sftp)
+sftp.mkdir = (path, options, cb) => {
+  if (path.endsWith('/main.ts')) return cb(Object.assign(new Error('not a directory'), { code: 4 }))
+  if (path.endsWith('/blocked')) return cb(Object.assign(new Error('disk full'), { code: 4 }))
+  return originalMkdir(path, options, cb)
+}
+await assert.rejects(() => files.mkdir(host, '/srv/app/blocked'))
+await assert.rejects(() => files.mkdir(host, '/srv/app/main.ts'))
+assert.equal(sftp.dirs.has('/srv/app/blocked'), false)
+sftp.mkdir = originalMkdir
+
 /* rename + remove */
 await files.rename(host, '/srv/app/README.md', '/srv/app/docs/README.md')
 assert.ok(sftp.entries.has('/srv/app/docs/README.md'))

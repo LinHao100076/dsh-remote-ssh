@@ -195,7 +195,9 @@ export class RemoteFiles {
       } catch (error) {
         const failed = sftpError(error, current)
         if (failed.code === 'denied') throw failed
-        // EEXIST / failure on an existing directory is fine.
+        // Only an existing directory is success, not an arbitrary SFTP failure.
+        const existing = await this.stat(host, current)
+        if (existing?.type !== 'dir') throw failed
       }
     }
     return { path }

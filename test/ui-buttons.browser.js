@@ -11,7 +11,13 @@ async (page) => {
   const conflicts = []
   const queue = []
   const rules = []
-  const files = new Map([['/home/u/main.js', 'hello\n'], ['/home/u/slow.js', 'slow contents'], ['/home/u2/outside.js', 'outside']])
+  const uploads = new Map()
+  const directories = new Set(['/home/u', '/home/u/temp'])
+  let uploadCounter = 0
+  let failUpload = false
+  let slowUpload = false
+  let releaseUpload
+  const files = new Map([['/home/u/temp/inside.txt', 'inside'], ['/home/u/main.js', 'hello\n'], ['/home/u/slow.js', 'slow contents'], ['/home/u2/outside.js', 'outside']])
   const info = { kernel: 'Linux fixture', home: '/home/u', shell: '/bin/sh', tmux: true }
   let pendingAuth
   let challenge
@@ -36,6 +42,7 @@ async (page) => {
   await page.unroute('**/remote/api/**')
   await page.route('**/remote/api/**', async route => {
     const method = route.request().url().split('/').pop()
+    assert(Buffer.byteLength(route.request().postData() || '') < 2 * 1024 * 1024, 'request body exceeds HTTP limit')
     const p = route.request().postDataJSON()
     calls.push({ method, payload: p })
     let value = {}
@@ -77,12 +84,17 @@ async (page) => {
         const i = mappings.findIndex(m => m.id === row.id)
         if (i < 0) mappings.push(row); else mappings[i] = row
       } else if (method === 'sync.remove') mappings.splice(mappings.findIndex(m => m.id === p.mappingId), 1)
-      else if (method === 'sync.pushAll') value = { files: 1, bytes: 6, failed: failPush ? [{ message: 'fixture upload failed' }] : [] }
+      else if (method === 'sync.pushAll') {
+        files.set('/home/u/synced.txt', 'synced')
+        files.set('/home/u/temp/synced-child.txt', 'synced child')
+        value = { files: 1, bytes: 6, failed: failPush ? [{ message: 'fixture upload failed' }] : [] }
+      }
       else if (method === 'sync.pull') value = { size: 6, mtimeMs: 1000 }
       else if (method === 'transfer.cleanParts') value = { removed: 1, bytes: 3 }
       else if (method === 'fs.list') {
         const path = p.path || '/home/u'
         const entries = new Map()
+        for (const dir of directories) { if (dir.startsWith(path + '/') && !dir.slice(path.length + 1).includes('/')) entries.set(dir.slice(path.length + 1), { path: dir, name: dir.slice(path.length + 1), type: 'dir' }) }
         for (const [key, text] of files) {
           if (!key.startsWith(path + '/')) continue
           const rest = key.slice(path.length + 1)
@@ -96,7 +108,20 @@ async (page) => {
       } else if (method === 'fs.write') { files.set(p.path, p.text); value = { size: p.text.length, mtimeMs: 2000 } }
       else if (method === 'fs.putBase64') files.set(p.path, Buffer.from(p.data, 'base64').toString())
       else if (method === 'fs.remove') files.delete(p.path)
-      else if (method === 'fs.mkdir') value = { path: p.path }
+      else if (method === 'fs.mkdir') { directories.add(p.path); value = { path: p.path } }
+      else if (method === 'fs.upload.begin') { const uploadId = `upload-${++uploadCounter}`; uploads.set(uploadId, { path: p.path, chunks: [], size: p.size }); value = { uploadId, chunkBytes: 256 * 1024 } }
+      else if (method === 'fs.upload.chunk') {
+        if (failUpload) throw new Error('fixture chunk failed')
+        if (slowUpload) await new Promise(resolve => { releaseUpload = resolve })
+        uploads.get(p.uploadId).chunks.push(Buffer.from(p.data, 'base64'))
+      }
+      else if (method === 'fs.upload.finish') {
+        const upload = uploads.get(p.uploadId); const bytes = Buffer.concat(upload.chunks)
+        assert(bytes.length === upload.size, 'upload incomplete')
+        files.set(upload.path, bytes.toString()); uploads.delete(p.uploadId)
+      }
+      else if (method === 'fs.upload.abort') uploads.delete(p.uploadId)
+      else if (method === 'transfer.download') { assert(p.localPath.startsWith('C:/chosen/'), 'custom local download path lost'); value = { size: 6 } }
       else if (method === 'fs.search') {
         if (p.query === 'slow') await new Promise(resolve => { slowSearch = resolve })
         value = { hits: [{ path: '/home/u/main.js', line: 1, column: 1, text: p.query }], files: 1, engine: 'fixture', durationMs: 1 }
@@ -162,13 +187,58 @@ async (page) => {
   await page.getByRole('button', { name: '连接', exact: true }).last().click()
   await page.locator('.rs-row').filter({ hasText: 'main.js' }).waitFor()
   checked.push('连接、断开、重新连接')
-  await page.getByTitle('新建目录', { exact: true }).click({ trial: true })
-  await page.evaluate(() => { window.__promptAnswer = 'new-folder' })
+  // Electron throws on window.prompt: mkdir must use an in-page form.
+  await page.evaluate(() => { window.prompt = () => { throw new Error('prompt is not supported') } })
+  await page.locator('.rs-row').filter({ hasText: /^temp/ }).dblclick()
+  await page.locator('.rs-crumb .rs-last').filter({ hasText: 'temp' }).waitFor()
+  await page.getByText('上传位置：/home/u/temp', { exact: false }).waitFor()
+  await page.locator('input[type=file]').setInputFiles({ name: 'nested.txt', mimeType: 'text/plain', buffer: Buffer.from('nested') })
+  await wait(() => files.has('/home/u/temp/nested.txt'), 'double-click did not change upload directory')
+  await page.getByTitle('上一级', { exact: true }).click()
+  checked.push('目录双击进入、上传目标位置')
   await page.getByTitle('新建目录', { exact: true }).click()
-  await wait(() => count('fs.mkdir') > 0, 'mkdir not called')
+  await page.getByLabel('目录名称', { exact: true }).fill('new-folder')
+  await click('创建目录')
+  await page.locator('.rs-row').filter({ hasText: /^new-folder/ }).waitFor()
+  assert(last('fs.mkdir').path === '/home/u/new-folder', 'mkdir wrong parent')
+
   await page.locator('input[type=file]').setInputFiles({ name: 'upload.txt', mimeType: 'text/plain', buffer: Buffer.from('upload') })
   await page.locator('.rs-row').filter({ hasText: 'upload.txt' }).waitFor()
   await page.getByTitle('刷新', { exact: true }).click()
+  await page.locator('input[type=file]').setInputFiles({ name: 'big.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(20 * 1024 * 1024, 65) })
+  await wait(() => files.has('/home/u/big.bin'), '20 MB browser upload failed')
+  assert(files.get('/home/u/big.bin').length === 20 * 1024 * 1024, '20 MB upload was truncated')
+  await wait(() => page.getByTitle('上传文件', { exact: true }).isEnabled(), 'upload UI did not finish')
+  files.set('/home/u/existing.txt', 'original')
+  failUpload = true
+  await page.locator('input[type=file]').setInputFiles({ name: 'existing.txt', mimeType: 'text/plain', buffer: Buffer.from('replacement') })
+  await page.getByText('fixture chunk failed', { exact: true }).waitFor()
+  await wait(() => uploads.size === 0, 'failed upload not aborted')
+  assert(files.get('/home/u/existing.txt') === 'original', 'failed upload replaced destination')
+  failUpload = false
+  await wait(() => page.getByTitle('上传文件', { exact: true }).isEnabled(), 'failed upload UI did not finish')
+  slowUpload = true
+  await page.locator('input[type=file]').setInputFiles({ name: 'existing.txt', mimeType: 'text/plain', buffer: Buffer.alloc(1024 * 1024, 66) })
+  await wait(() => releaseUpload !== undefined, 'slow upload did not start')
+  await click('取消上传')
+  slowUpload = false
+  releaseUpload()
+  await page.getByText('上传已取消', { exact: true }).waitFor()
+  await wait(() => uploads.size === 0, 'cancelled upload not aborted')
+  assert(files.get('/home/u/existing.txt') === 'original', 'cancelled upload replaced original')
+  checked.push('20 MB 分块上传、失败和用户取消均保留原文件')
+  await page.locator('.rs-row').filter({ hasText: 'main.js' }).click()
+  await page.getByTitle('隐藏预览').click()
+  assert(await page.locator('.rs-peek').count() === 0, 'hide preview failed')
+  await page.locator('.rs-row').filter({ hasText: 'main.js' }).click()
+  await page.locator('.rs-row').filter({ hasText: 'main.js' }).click()
+  assert(await page.locator('.rs-peek').count() === 0, 'deselect did not hide preview')
+  await page.locator('.rs-row').filter({ hasText: 'slow.js' }).click()
+  await wait(() => slowRead !== undefined, 'slow read not started')
+  await page.getByTitle('隐藏预览').click()
+  slowRead(); slowRead = undefined
+  await new Promise(r => setTimeout(r, 150))
+  assert(await page.locator('.rs-peek').count() === 0, 'late read reopened preview')
   await page.locator('.rs-row').filter({ hasText: 'main.js' }).click()
   await click('编辑')
   await page.locator('textarea.rs-code').fill('edited')
@@ -184,7 +254,8 @@ async (page) => {
   slowRead()
   await new Promise(r => setTimeout(r, 150))
   assert(await page.locator('.rs-peek-path').innerText() === 'main.js', 'stale read replaced selected preview')
-  checked.push('新建目录、上传、刷新、编辑保存/取消')
+  await page.getByTitle('隐藏预览').click()
+  checked.push('新建目录、上传、刷新、编辑保存/取消、隐藏/取消选择预览')
   await page.getByRole('tab', { name: '同步', exact: true }).click()
   delayCwd = true
   await click('新建映射')
@@ -226,6 +297,8 @@ async (page) => {
   failPush = false
   await page.evaluate(() => { window.__promptAnswer = 'main.js' })
   await click('下载单个')
+  await page.getByLabel('映射内相对路径', { exact: true }).fill('main.js')
+  await click('确认下载')
   await wait(() => count('sync.pull') > 0, 'pull not called')
   await click('清理残留')
   await wait(() => count('transfer.cleanParts') > 0, 'clean not called')
@@ -233,17 +306,31 @@ async (page) => {
   checked.push('三种冲突处理、队列刷新及部分推送失败反馈')
   // A new mapping must work immediately, without reconnecting or remounting files.
   await page.getByRole('tab', { name: '文件', exact: true }).click()
+  await page.locator('.rs-row').filter({ hasText: 'synced.txt' }).waitFor()
+  await page.locator('.rs-row').filter({ hasText: /^temp/ }).click()
+  await page.locator('.rs-row').filter({ hasText: 'synced-child.txt' }).waitFor()
+  files.set('/home/u/temp/later.txt', 'auto sync')
+  await page.locator('.rs-row').filter({ hasText: 'later.txt' }).waitFor({ timeout: 7000 })
+  checked.push('同步后返回文件页刷新、展开子目录自动刷新')
   await page.locator('.rs-row').filter({ hasText: 'main.js' }).click()
   await click('下载')
+  await click('下载到映射目录')
   await wait(() => count('sync.pull') === 2, 'file download must use bounded mapping API')
   assert(last('sync.pull').rel === 'main.js', 'wrong relative download path')
+  await click('取消下载')
   await page.getByTitle('上一级', { exact: true }).click()
   await page.locator('.rs-row').filter({ hasText: /^u2/ }).click()
   const beforeOutside = count('sync.pull')
   await page.locator('.rs-row').filter({ hasText: 'outside.js' }).hover()
-  await page.locator('.rs-row').filter({ hasText: 'outside.js' }).getByTitle('下载到本地映射目录').click()
+  await page.locator('.rs-row').filter({ hasText: 'outside.js' }).getByTitle('下载到本地…').click()
+  await click('下载到映射目录')
   await page.getByText('先为该主机建立路径映射，才能下载到本地', { exact: true }).waitFor()
   assert(count('sync.pull') === beforeOutside, 'sibling prefix escaped mapping root')
+  await page.getByLabel('本地保存路径（含文件名）', { exact: true }).fill('C:/chosen/outside.js')
+  await click('保存到本地')
+  await wait(() => count('transfer.download') === 1, 'unmapped custom download not called')
+  assert(last('transfer.download').remotePath === '/home/u2/outside.js', 'wrong remote custom download')
+  checked.push('无映射自定义本地下载路径')
   await page.locator('.rs-crumb button').first().click()
   checked.push('文件下载、上一级、面包屑')
   await page.getByTitle('在远端搜索内容').click()

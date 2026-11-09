@@ -10,8 +10,18 @@ const runtime = await build({
       if (name === 'react') return React;
       throw new Error('unexpected module: ' + name);
     });
-    createRoot(document.getElementById('app')).render(React.createElement(plugin.NATIVE.RemoteWorkspace,
-      { ctx: { get: () => undefined }, sessionId: 'ui-session', visible: true }));`,
+    // Exercise apply() and the native slot registration, not an exported pane shortcut.
+    let nativeEntry;
+    const slots = {
+      inject: (name, callback) => callback(),
+      register: (entry, component) => { if (entry.name === 'sidebar.right.pane.tab') nativeEntry = { entry, component }; return () => {}; },
+    };
+    const services = { slots, sidebarRightTabs: { get: () => undefined, register: () => () => {} }, sidebarRight: { openTab: () => {} } };
+    const ctx = { get: name => services[name], effect: fn => fn(), inject: (names, callback) => { if (names.includes('slots')) callback(ctx); return () => {}; } };
+    plugin.apply(ctx);
+    if (!nativeEntry) throw new Error('native sidebar entry was not registered');
+    createRoot(document.getElementById('app')).render(React.createElement(nativeEntry.component,
+      { ...nativeEntry.entry.inject('ui-session'), visible: true }));`,
     resolveDir: process.cwd(),
   }, bundle: true, write: false, format: 'iife', define: { 'process.env.NODE_ENV': '"production"' },
 })

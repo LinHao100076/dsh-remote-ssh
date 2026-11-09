@@ -19,6 +19,7 @@ import { SshPool } from './ssh/pool.js'
 import { RemoteFiles } from './remote/files.js'
 import { RemoteSearch } from './remote/search.js'
 import { Transfer } from './remote/transfer.js'
+import { BrowserUploads } from './remote/browser-uploads.js'
 import { SyncEngine } from './sync/engine.js'
 import { ForwardManager } from './forward/manager.js'
 import { buildApi, sessionCwd, toWireError } from './api.js'
@@ -76,11 +77,12 @@ export async function apply(ctx, config = {}) {
   })
   const files = new RemoteFiles(pool)
   const transfer = new Transfer(pool, files)
+  const uploads = new BrowserUploads(pool)
   const engine = new SyncEngine({ pool, files, transfer, store })
   const forward = new ForwardManager({ store, pool })
   const search = new RemoteSearch(pool)
 
-  const api = buildApi({ ctx, store, pool, files, transfer, engine, forward, search, version: VERSION })
+  const api = buildApi({ ctx, store, pool, files, transfer, uploads, engine, forward, search, version: VERSION })
 
   /** Same admission gate as the built-in `/api` gateway. */
   const admitted = (req) => {
@@ -148,6 +150,7 @@ export async function apply(ctx, config = {}) {
     terminalWss.close()
     void forward.dispose()
     void engine.dispose()
+    void uploads.dispose()
     pool.dispose()
     void store.flush().catch(() => {})
   }, 'dsh-remote-ssh: teardown')

@@ -29,6 +29,8 @@ const directionLabel = (kind) => DIRECTION.find((item) => item.value === kind)?.
 
 /** One mapping card. */
 function MappingCard({ mapping, host, status, busy, onPatch, onPush, onPull, onRemove, onClean }) {
+  const [pullOpen, setPullOpen] = useState(false)
+  const [pullRel, setPullRel] = useState('')
   return (
     <div className="rs-card">
       <div className="rs-card-h">
@@ -68,11 +70,16 @@ function MappingCard({ mapping, host, status, busy, onPatch, onPush, onPull, onR
 
         <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
           <Button size="sm" onClick={onPush} disabled={busy}>{busy ? '推送中…' : '全量推送'}</Button>
-          <Button size="sm" onClick={onPull}>下载单个</Button>
+          <Button size="sm" onClick={() => setPullOpen(value => !value)}>下载单个</Button>
           <Button size="sm" onClick={onClean} disabled={busy} title="删除中断的传输留下的片段文件">清理残留</Button>
           <span style={{ flex: 1 }} />
           {mapping.pending > 0 ? <span className="rs-badge warn">{mapping.pending} 待上传</span> : null}
         </div>
+        {pullOpen ? <form onSubmit={event => { event.preventDefault(); if (pullRel.trim() !== '') onPull(pullRel.trim()) }}>
+          <label>映射内相对路径<input className="rs-input" placeholder="src/app/main.ts" value={pullRel} onChange={event => setPullRel(event.target.value)} /></label>
+          <Button type="submit" size="sm" disabled={busy || pullRel.trim() === ''}>确认下载</Button>
+          <Button size="sm" onClick={() => setPullOpen(false)}>取消下载</Button>
+        </form> : null}
       </div>
     </div>
   )
@@ -219,7 +226,7 @@ export function SyncPane({ ctx, sessionId, hostId, hosts, statuses, active, snap
               mapping={mapping}
               host={host}
               status={statuses?.[mapping.hostId]?.status ?? 'disconnected'}
-              busy={busy === `push-${mapping.id}` || busy === `clean-${mapping.id}`}
+              busy={busy === `push-${mapping.id}` || busy === `clean-${mapping.id}` || busy === `pull-${mapping.id}`}
               onPatch={(patch) => void run(`map-${mapping.id}`, () => api(ctx, 'sync.save', {
                 sessionId, mapping: { ...mapping, ...patch },
               }))}
@@ -231,9 +238,7 @@ export function SyncPane({ ctx, sessionId, hostId, hosts, statuses, active, snap
                   flash(`已推送 ${value.files} 个文件 · ${formatBytes(value.bytes)}`)
                 })
               }}
-              onPull={() => {
-                const rel = window.prompt('要下载的映射内相对路径（例如 src/app/main.ts）')
-                if (rel === null || rel.trim() === '') return
+              onPull={(rel) => {
                 void run(`pull-${mapping.id}`, async () => {
                   await api(ctx, 'sync.pull', { sessionId, mappingId: mapping.id, rel: rel.trim() })
                   flash('已下载')

@@ -11,14 +11,14 @@
  */
 import { createElement as h, Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
-  api, dirnameRemote, formatBytes, joinRemote, readFileBase64, sinceLabel, useToast,
+  api, dirnameRemote, formatBytes, joinRemote, readFileBase64, sinceLabel, useToast, usePolling,
 } from './state.js'
 import { Button, Icon, IconButton } from './ui.jsx'
 
 /**
  * @param {object} props - `ctx`, `sessionId`, `hostId`, `host`, `hostInfo`.
  */
-export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
+export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = true }) {
   const [path, setPath] = useState('')
   const [dirs, setDirs] = useState({})
   const [open, setOpen] = useState({})
@@ -27,6 +27,13 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState(undefined)
+  const [folder, setFolder] = useState(undefined)
+  const [downloadEntry, setDownloadEntry] = useState(undefined)
+  const [localPath, setLocalPath] = useState('')
+  const [uploadProgress, setUploadProgress] = useState('')
+  const uploadJob = useRef(null)
+  const location = useRef({ hostId, path })
+  location.current = { hostId, path }
   const [searchOpen, setSearchOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [caseSensitive, setCaseSensitive] = useState(false)
@@ -41,7 +48,17 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
      replace the hits of the query the user is actually looking at. */
   const searchSeq = useRef(0)
   const loadSeq = useRef(0)
+  const refreshSeq = useRef(0)
   const peekSeq = useRef(0)
+
+  const closePreview = () => {
+    peekSeq.current += 1
+    setPeek(undefined)
+    setEditing(false)
+    setDraft('')
+  }
+
+  useEffect(() => () => { if (uploadJob.current) uploadJob.current.cancelled = true }, [hostId, sessionId])
 
   /** List one directory and make it current. */
   const load = useCallback(async (target) => {
@@ -61,9 +78,30 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
     }
   }, [ctx, hostId, sessionId])
 
+  const navigate = (target) => {
+    closePreview()
+    setOpen({})
+    void load(target)
+  }
+
+  // Refresh expanded children too: a sync may have created files inside them.
+  const refresh = async () => {
+    const seq = loadSeq.current
+    const refreshId = ++refreshSeq.current
+    const targets = [...new Set([path, ...Object.keys(open).filter(key => open[key])])]
+    const values = await Promise.all(targets.map(target => api(ctx, 'fs.list', { sessionId, hostId, path: target })))
+    if (seq !== loadSeq.current || refreshId !== refreshSeq.current) return
+    setDirs(current => ({ ...current, ...Object.fromEntries(values.map(value => [value.path, value.entries])) }))
+  }
+  usePolling(active === true && hostId !== '' && path !== '', 4000, async () => {
+    try { await refresh() } catch (failure) { setError(failure.message) }
+  })
+
   /* Host switch: start from the mapped remote root, else the login home. */
   useEffect(() => {
     if (hostId === '') return undefined
+    setFolder(undefined)
+    setDownloadEntry(undefined)
     setDirs({})
     setOpen({})
     setPeek(undefined)
@@ -196,24 +234,53 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
   const upload = async (event) => {
     const files = [...(event.target.files ?? [])]
     event.target.value = ''
-    if (files.length === 0 || path === '') return
+    if (files.length === 0 || path === '' || uploadJob.current) return
+    const target = path
+    const job = { cancelled: false }
+    uploadJob.current = job
     setBusy('upload')
+    setError(undefined)
     try {
       for (const file of files) {
-        const data = await readFileBase64(file)
-        await api(ctx, 'fs.putBase64', { sessionId, hostId, path: joinRemote(path, file.name), data })
+        if (job.cancelled) throw new Error('上传已取消')
+        job.committing = false
+        setUploadProgress(`${file.name} · 准备上传…`)
+        let uploadId
+        let committed = false
+        try {
+          const begun = await api(ctx, 'fs.upload.begin', { sessionId, hostId, path: joinRemote(target, file.name), size: file.size })
+          uploadId = begun.uploadId
+          const chunkBytes = Math.min(begun.chunkBytes, 256 * 1024)
+          if (!Number.isInteger(chunkBytes) || chunkBytes <= 0) throw new Error('上传分块大小无效')
+          for (let offset = 0; offset < file.size; offset += chunkBytes) {
+            if (job.cancelled) throw new Error('上传已取消')
+            const data = await readFileBase64(file.slice(offset, offset + chunkBytes))
+            if (job.cancelled) throw new Error('上传已取消')
+            await api(ctx, 'fs.upload.chunk', { sessionId, hostId, uploadId, offset, data })
+            setUploadProgress(`${file.name} · ${formatBytes(Math.min(offset + chunkBytes, file.size))} / ${formatBytes(file.size)}`)
+          }
+          if (job.cancelled) throw new Error('上传已取消')
+          job.committing = true
+          setUploadProgress(`${file.name} · 正在发布…`)
+          await api(ctx, 'fs.upload.finish', { sessionId, hostId, uploadId })
+          committed = true
+        } finally {
+          if (uploadId && !committed) await api(ctx, 'fs.upload.abort', { sessionId, hostId, uploadId }).catch(() => {})
+        }
       }
-      flash(`已上传 ${files.length} 个文件`)
-      await load(path)
+      flash(`已上传 ${files.length} 个文件到 ${target}`)
     } catch (failure) {
       setError(failure.message)
     } finally {
+      uploadJob.current = null
+      setUploadProgress('')
       setBusy('')
+      if (location.current.hostId === hostId && location.current.path === target) void refresh().catch(failure => setError(failure.message))
     }
   }
 
   /** Download one remote path into the mapping's local root. */
-  const downloadTo = async (entry) => {
+  const downloadMapped = async (entry) => {
     setBusy('download')
     try {
       const snapshot = await api(ctx, 'sync.list', { sessionId })
@@ -237,9 +304,20 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
     }
   }
 
+  const downloadTo = (entry) => { setDownloadEntry(entry); setLocalPath(''); setError(undefined) }
   const download = () => {
-    if (peek?.path === undefined) return
-    void downloadTo({ path: peek.path, name: peek.path.replace(/^.*\//, '') })
+    if (peek?.path !== undefined) downloadTo({ path: peek.path, name: peek.path.replace(/^.*\//, '') })
+  }
+  const downloadCustom = async () => {
+    if (!downloadEntry || localPath.trim() === '') return
+    setBusy('download')
+    setError(undefined)
+    try {
+      await api(ctx, 'transfer.download', { sessionId, hostId, remotePath: downloadEntry.path, localPath: localPath.trim() })
+      flash(`已下载到 ${localPath.trim()}`)
+      setDownloadEntry(undefined)
+    } catch (failure) { setError(failure.message) }
+    finally { setBusy('') }
   }
 
   const remove = async () => {
@@ -259,14 +337,21 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
   }
 
   const newFolder = async () => {
-    const name = window.prompt('新目录名称')
-    if (name === null || name.trim() === '') return
-    try {
-      await api(ctx, 'fs.mkdir', { sessionId, hostId, path: joinRemote(path, name.trim()) })
-      await load(path)
-    } catch (failure) {
-      setError(failure.message)
+    const name = folder?.name.trim() ?? ''
+    if (!name || name === '.' || name === '..' || /[\\/\0]/.test(name)) {
+      setError('请输入有效的单级目录名称（不含斜杠）')
+      return
     }
+    const parent = folder.parent
+    setBusy('mkdir')
+    setError(undefined)
+    try {
+      await api(ctx, 'fs.mkdir', { sessionId, hostId, path: joinRemote(parent, name) })
+      setFolder(undefined)
+      flash('目录已创建')
+      if (location.current.path === parent && location.current.hostId === hostId) await load(parent)
+    } catch (failure) { setError(failure.message) }
+    finally { setBusy('') }
   }
 
   /* ── render ─────────────────────────────────────────────────────────── */
@@ -281,7 +366,12 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
           className={`rs-row${peek?.path === entry.path ? ' sel' : ''}`}
           style={{ paddingLeft: 6 + depth * 13 }}
           title={entry.path}
-          onClick={() => (isDir ? toggleDir(entry) : openFile(entry))}
+          onClick={() => {
+            if (isDir) { closePreview(); void toggleDir(entry) }
+            else if (peek?.path === entry.path) closePreview()
+            else void openFile(entry)
+          }}
+          onDoubleClick={isDir ? () => navigate(entry.path) : undefined}
         >
           {isDir
             ? <Icon name="chevron" size={12} className={`rs-chev${open[entry.path] ? ' open' : ''}`} />
@@ -293,7 +383,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
               <button
                 type="button"
                 className="rs-act"
-                title="下载到本地映射目录"
+                title="下载到本地…"
                 onClick={(event) => { event.stopPropagation(); void downloadTo(entry) }}
               >
                 <Icon name="down" size={12} />
@@ -315,7 +405,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
 
   const breadcrumb = (
     <div className="rs-crumb">
-      <button type="button" className="rs-crumb-host" onClick={() => load('')}>{host?.name ?? 'remote'}</button>
+      <button type="button" className="rs-crumb-host" onClick={() => navigate('')}>{host?.name ?? 'remote'}</button>
       <span className="rs-sl">:/</span>
       {segments.map((segment, index) => {
         const target = `/${segments.slice(0, index + 1).join('/')}`
@@ -325,7 +415,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
             <button
               type="button"
               className={last ? 'rs-last' : undefined}
-              onClick={() => load(target)}
+              onClick={() => navigate(target)}
             >
               {segment}
             </button>
@@ -464,10 +554,10 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
     <>
       <div className="rs-bar">
         {breadcrumb}
-        <IconButton name="levelUp" title="上一级" onClick={() => load(dirnameRemote(path))} disabled={atRoot} />
-        <IconButton name="folderPlus" title="新建目录" onClick={newFolder} />
-        <IconButton name="up" title="上传文件" onClick={() => fileInput.current?.click()} />
-        <IconButton name="refresh" title="刷新" onClick={() => load(path)} />
+        <IconButton name="levelUp" title="上一级" onClick={() => navigate(dirnameRemote(path))} disabled={atRoot} />
+        <IconButton name="folderPlus" title="新建目录" onClick={() => { setFolder({ parent: path, name: '' }); setError(undefined) }} disabled={path === '' || busy !== ''} />
+        <IconButton name="up" title="上传文件" onClick={() => fileInput.current?.click()} disabled={path === '' || busy !== ''} />
+        <IconButton name="refresh" title="刷新" onClick={() => { void refresh().catch(failure => setError(failure.message)) }} />
         <IconButton
           name="search"
           title="在远端搜索内容"
@@ -477,10 +567,27 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
         <input type="file" multiple ref={fileInput} style={{ display: 'none' }} onChange={upload} />
       </div>
 
+      <div className="rs-hint" style={{ padding: '4px 12px' }}>上传位置：{path || '正在读取…'} · 单击展开目录，双击进入目录</div>
+      {uploadProgress === '' ? null : <div className="rs-hint">{uploadProgress}<Button size="sm" disabled={uploadJob.current?.committing === true} onClick={() => { if (uploadJob.current) uploadJob.current.cancelled = true }}>取消上传</Button></div>}
+      {folder === undefined ? null : <form className="rs-card" style={{ margin: '8px 12px', padding: '10px' }} onSubmit={event => { event.preventDefault(); void newFolder() }}>
+        <div className="rs-muted">新建于：{folder.parent}</div>
+        <label>目录名称<input className="rs-input" autoFocus value={folder.name} onChange={event => setFolder({ ...folder, name: event.target.value })} /></label>
+        <Button type="submit" size="sm" disabled={busy === 'mkdir'}>创建目录</Button>
+        <Button size="sm" onClick={() => setFolder(undefined)} disabled={busy === 'mkdir'}>取消创建</Button>
+      </form>}
+      {downloadEntry === undefined ? null : <form className="rs-card" style={{ margin: '8px 12px', padding: '10px' }} onSubmit={event => { event.preventDefault(); void downloadCustom() }}>
+        <div className="rs-muted">下载：{downloadEntry.path}</div>
+        <label>本地保存路径（含文件名）<input className="rs-input" autoFocus placeholder="C:/Downloads/file.txt 或 /home/user/Downloads/file.txt" value={localPath} onChange={event => setLocalPath(event.target.value)} /></label>
+        <div className="rs-muted">保存到运行 DSH 的电脑。填写完整绝对路径，无需建立映射。</div>
+        <Button type="submit" size="sm" disabled={busy === 'download' || localPath.trim() === ''}>保存到本地</Button>
+        <Button size="sm" disabled={busy === 'download'} onClick={() => { void downloadMapped(downloadEntry) }}>下载到映射目录</Button>
+        <Button size="sm" disabled={busy === 'download'} onClick={() => setDownloadEntry(undefined)}>取消下载</Button>
+      </form>}
+
       {error !== undefined ? <div className="rs-err-box" style={{ margin: '8px 12px 0' }}><div className="rs-t"><Icon name="warn" size={12} />操作失败</div><code>{error}</code></div> : null}
 
       {searchOpen === true ? searchPane : (
-        <div className="rs-tree">
+        <div className="rs-tree" onClick={event => { if (!event.target.closest('.rs-row')) closePreview() }}>
           {busy === 'load' && dirs[path] === undefined
             ? <div className="rs-hint">读取目录…</div>
             : rowsFor(path, 0)}
@@ -498,6 +605,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo }) {
             <span className="rs-badge">{peek.loading === true ? '读取中' : formatBytes(peek.size ?? 0)}</span>
             {peek.focusLine === undefined ? null : <span className="rs-badge">第 {peek.focusLine} 行</span>}
             <span className="rs-peek-meta">{peek.mtimeMs ? sinceLabel(peek.mtimeMs) : ''}</span>
+            <IconButton name="x" title="隐藏预览" onClick={closePreview} />
           </div>
 
           {peek.error !== undefined
