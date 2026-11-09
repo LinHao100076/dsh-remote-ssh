@@ -12,7 +12,7 @@ DSH（DeepSeek Harness）的远程 SSH 插件：在侧边栏里看远端文件�
   <img src="docs/assets/terminal.png" width="330" alt="终端：tmux 持久会话，刷新后接回同一个 shell">
 </p>
 
-当前版本 **`0.7.0`** —— 没有密钥也能连，隔几层堡垒机也能连。`0.4.0` 加远端内容搜索，`0.5.0` 加断点续传，`0.6.0` 补上 socks5 动态转发与 `-R` 反向转发，`0.6.1` 修掉「Node 20 上整份宿主端 bundle 加载即抛」的问题，`0.7.0` 补上密码 / keyboard-interactive（2FA）登录与多跳跳板链路，Node 20 / 22 / 24 都跑过。更早的版本在 Release 上都标为 beta，各自坏在哪、后来被哪个版本修掉，写在对应 Release 的说明里。完整变更见 [CHANGELOG](CHANGELOG.md)，下一步见 [ROADMAP](ROADMAP.md)。
+当前版本 **`0.7.1`** —— 没有密钥也能连，隔几层堡垒机也能连；新装的人第一次就能建连接。`0.4.0` 加远端内容搜索，`0.5.0` 加断点续传，`0.6.0` 补上 socks5 动态转发与 `-R` 反向转发，`0.6.1` 修掉「Node 20 上整份宿主端 bundle 加载即抛」的问题，`0.7.0` 补上密码 / keyboard-interactive（2FA）登录与多跳跳板链路，`0.7.1` 修掉「一台主机都没有时新建按钮点了没反应」，Node 20 / 22 / 24 都跑过。更早的版本在 Release 上都标为 beta，各自坏在哪、后来被哪个版本修掉，写在对应 Release 的说明里。完整变更见 [CHANGELOG](CHANGELOG.md)，下一步见 [ROADMAP](ROADMAP.md)。
 
 ## 文档
 
@@ -46,9 +46,9 @@ lib/server.mjs     构建产物：宿主端 bundle（ssh2 / ws / chokidar 全打
 docs/design.md     架构取舍、平台发现、问题清单、里程碑
 docs/assets/       README 用的面板截图（由 ui/prototype.html 生成）
 ui/prototype.html  UI 原型（单文件，浏览器直接打开，可切深色）——界面以它为准
-test/              十三轮测试（见下）
+test/              十六轮测试（见下）
 scripts/           对着真实服务器跑的验收脚本；`dev-remote.mjs` 是本地假远端（exec 走真 shell，SFTP 只读）
-.github/           issue / PR 模板、CI（Node 20 / 22 / 24 各跑一遍十三轮测试）、dependabot
+.github/           issue / PR 模板、CI（Node 20 / 22 / 24 各跑一遍十六轮测试）、dependabot
 .gitleaks.toml     秘密扫描配置：只放行 ssh2 那段 Ed25519 探针密钥（见 SECURITY.md）
 ```
 
@@ -199,7 +199,7 @@ SOCKS5 只实现 `CONNECT`。`BIND` 和 `UDP ASSOCIATE` 会明确回 `0x07 comma
 ## 验证
 
 ```bash
-npm test             # 先自动 build（两个 bundle），再跑十五轮 Node 测试
+npm test             # 先自动 build（两个 bundle），再跑十六轮 Node 测试
 ```
 
 `npm test` 有 `pretest` 钩子，会先重建两个 bundle —— 否则渲染测试可能跑在旧产物上，改了代码却仍报绿。
@@ -214,6 +214,7 @@ npm test             # 先自动 build（两个 bundle），再跑十五轮 Node
 | `test/transfer.mjs` | 分块传输与断点续传：中断后从 part 文件大小继续、只补发剩余、源文件变化时指纹不匹配不复用、过期 part 不被误用、清理只删 part、目录遍历跳过 part |
 | `test/forward.mjs` | 三种转发都是真实 TCP 往返：`-L` 穿透 `direct-tcpip`、`-D` 走完整 SOCKS5 握手（含管道化首包、失败回 0x05）、`-R` 穿透 `forwarded-tcpip` 并在断线重连后重新申请端口、停止时让服务器释放端口；另加通配地址判重、字节统计、端口占用、autoStart、落盘无密码 |
 | `test/socks5.mjs` | SOCKS5 协议层：握手/请求被拆成多包、管道化数据原样返回、IPv4/IPv6/域名三种地址、`BIND` 回 0x07、空域名与 0 端口回 0x08、只给需认证方法时回 0xff、非 SOCKS 客户端直接断开、静默客户端超时、错误码映射 |
+| `test/gate.mjs` | 正文在「连接页」与「面板」之间的取舍：一台主机都没有时设置页必须能开（它是新建第一个主机的唯一入口，issue #18 回归）、`文件`/`终端` 仍需真连接、`同步`/`转发` 离线可编辑、`creating` 不能把无主机的文件树放出来，并断言 `lib/client.js` 里不许再出现旧表达式 |
 | `test/render.mjs` | 用真实 React（`react-dom/server`）渲染五个视图 + 连接门四态 + 原生工作区，并断言密码框存在（issue #2），捕捉只在渲染时炸的错 |
 | `test/native.mjs` | 两个入口的取舍：有 better-sidebar 时**一个**标签页、没有时原生类型/面板/头部按钮、后激活时的交接、卸载后无残留 |
 | `test/api.mjs` | 草稿主机的 id 按目标稳定（重复点「测试连接」复用一条连接、不占用当前主机的槽位），编辑已有主机时沿用已钉的指纹（issue #5 回归） |
@@ -322,7 +323,7 @@ dsh plugin --profile <name> allow-version dsh-better-sidebar@0.28.0 \
 - 安全相关：走 [SECURITY.md](SECURITY.md) 的私密渠道，不要开 public issue。
 - 想提功能：先看 [ROADMAP.md](ROADMAP.md)，里面既有已经排队的，也有明确不做的。
 
-`npm test` 是这个仓库的底线：十三轮全绿才合。关键协议（转发、SOCKS5、终端 WebSocket）不许用测试桩替代，历史上就是这么漏掉过一个「一点终端就崩宿主」的 bug。
+`npm test` 是这个仓库的底线：十六轮全绿才合。关键协议（转发、SOCKS5、终端 WebSocket）不许用测试桩替代，历史上就是这么漏掉过一个「一点终端就崩宿主」的 bug。
 
 ## 许可证
 
