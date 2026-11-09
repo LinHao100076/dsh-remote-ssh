@@ -217,12 +217,6 @@ function TermSession({ ctx, sessionId, hostId, terminalId, active, tmux }) {
     return () => cancelAnimationFrame(frame)
   }, [active, nonce])
 
-  const clear = () => termRef.current?.clear()
-  const paste = () => {
-    void navigator.clipboard?.readText?.()
-      .then((text) => { if (text !== '') termRef.current?.paste(text) })
-      .catch(() => {})
-  }
   const reconnect = () => {
     setNotice('')
     setError(undefined)
@@ -248,8 +242,6 @@ function TermSession({ ctx, sessionId, hostId, terminalId, active, tmux }) {
       <div className="rs-term-host" ref={containerRef} />
 
       <div className="rs-hintbar">
-        <button type="button" onClick={clear}>清屏</button>
-        <button type="button" onClick={paste}>粘贴</button>
         <span style={{ flex: 1 }} />
         <span>{persistent ? '进程存活由远端 tmux 保底' : '未安装 tmux：刷新后 shell 不保留'}</span>
       </div>

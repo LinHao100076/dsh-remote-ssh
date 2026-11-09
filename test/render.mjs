@@ -128,7 +128,7 @@ assert.match(files, /搜索文件/, 'files pane offers filename search')
 const terminal = render('terminal')
 assert.match(terminal, /rs-ttabs/, 'terminal pane renders its tab strip')
 assert.match(terminal, /rs-term-status/, 'terminal pane reports the session')
-assert.doesNotMatch(terminal, /⌘/, 'terminal buttons have no fixed macOS shortcut badges')
+assert.doesNotMatch(terminal, /⌘|>清屏<|>粘贴</, 'terminal has no clear or paste buttons')
 
 const sync = render('sync', { snapshot: { mappings: [], queue: [], conflicts: [], stats: {} } })
 assert.match(sync, /还没有路径映射/, 'sync pane empty state')
