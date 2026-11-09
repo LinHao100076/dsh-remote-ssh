@@ -337,7 +337,8 @@ export function buildApi({ ctx, store, pool, files, transfer, uploads, engine, f
       const requested = typeof payload.path === 'string' ? payload.path.trim() : ''
       const root = requested === '' ? await files.home(host) : requested
       const caseMode = ['smart', 'sensitive', 'insensitive'].includes(payload.case) ? payload.case : 'smart'
-      return search.search(host, {
+      const method = payload.mode === 'name' ? 'names' : 'search'
+      return search[method](host, {
         root,
         query: requireString(payload, 'query'),
         case: caseMode,

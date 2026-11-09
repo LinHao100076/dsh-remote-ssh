@@ -124,7 +124,10 @@ async (page) => {
       else if (method === 'transfer.download') { assert(p.localPath.startsWith('C:/chosen/'), 'custom local download path lost'); value = { size: 6 } }
       else if (method === 'fs.search') {
         if (p.query === 'slow') await new Promise(resolve => { slowSearch = resolve })
-        value = { hits: [{ path: '/home/u/main.js', line: 1, column: 1, text: p.query }], files: 1, engine: 'fixture', durationMs: 1 }
+        const hits = p.mode === 'name'
+          ? [...files.keys()].filter(path => path.startsWith(p.path + '/') && path.split('/').pop().toLowerCase().includes(p.query.toLowerCase())).map(path => ({ path, text: path.split('/').pop() }))
+          : [{ path: '/home/u/main.js', line: 1, column: 1, text: p.query }]
+        value = { hits, files: hits.length, engine: 'fixture', durationMs: 1 }
       } else if (method === 'forward.list') value = { hosts: rules.length ? [{ hostId: hosts[0].id, hostName: 'fixture', rules }] : [] }
       else if (method === 'forward.save') {
         const r = { ...p.rule, id: p.rule.id || 'r1', state: 'stopped', link: `127.0.0.1:${p.rule.listen.port}`, to: p.rule.kind === 'dynamic' ? 'SOCKS5' : `${p.rule.target.host}:${p.rule.target.port}`, listenSide: p.rule.kind === 'remote' ? 'remote' : 'local' }
@@ -333,7 +336,16 @@ async (page) => {
   checked.push('无映射自定义本地下载路径')
   await page.locator('.rs-crumb button').first().click()
   checked.push('文件下载、上一级、面包屑')
-  await page.getByTitle('在远端搜索内容').click()
+  await page.getByTitle('搜索文件').click()
+  await page.locator('.rs-sinput').fill('main.js')
+  await page.locator('.rs-shit').waitFor()
+  assert(last('fs.search').mode === 'name', 'default search must match filenames')
+  await page.locator('.rs-shit').first().click()
+  await page.locator('.rs-peek-path').filter({ hasText: 'main.js' }).waitFor()
+  assert(await page.locator('.rs-peek .rs-badge').filter({ hasText: '第 1 行' }).count() === 0, 'filename result must not invent a content line')
+  await page.locator('.rs-sinput').fill('hello-only-in-content')
+  await page.getByText('没有匹配', { exact: true }).waitFor()
+  await page.getByLabel('搜索范围', { exact: true }).selectOption('content')
   await page.locator('.rs-sinput').fill('hello')
   await page.locator('.rs-shit').waitFor()
   await page.getByTitle('区分大小写', { exact: true }).click()
@@ -349,7 +361,7 @@ async (page) => {
   slowSearch()
   await new Promise(r => setTimeout(r, 150))
   assert(await page.locator('.rs-shit').count() === 0, 'cleared search was repopulated by stale results')
-  await page.getByTitle('在远端搜索内容').click()
+  await page.getByTitle('搜索文件').click()
   await page.locator('.rs-row').filter({ hasText: 'upload.txt' }).click()
   await page.evaluate(() => { window.__confirmAnswer = false })
   await click('删除')
@@ -392,6 +404,7 @@ async (page) => {
     return urls.some(url => new URL(url, base).searchParams.get('terminalId') === 't1')
   }, 'terminal tabs do not carry independent ids')
   await page.getByTitle('关闭终端').last().click()
+  assert(await page.locator('.rs-hintbar kbd').count() === 0, 'terminal shortcut badges were not removed')
   await page.getByRole('button', { name: /清屏/ }).first().click()
   await page.evaluate(() => navigator.clipboard.writeText('PASTE_BUTTON_TEST'))
   await page.getByRole('button', { name: /粘贴/ }).first().click()

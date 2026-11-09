@@ -83,6 +83,28 @@ export class RemoteSearch {
     this.pool = pool
   }
 
+  /** Filename lookup never opens file contents; NUL records preserve unusual names. */
+  async names(host, { root, query, case: caseMode = 'smart', limit = DEFAULT_LIMIT, timeoutMs = 30000 }) {
+    const pattern = String(query ?? '')
+    if (pattern === '') throw new RemoteError('bad-query', '文件名不能为空', 400)
+    const maxHits = Math.min(Math.max(Math.floor(Number(limit)) || DEFAULT_LIMIT, 1), HARD_LIMIT)
+    const insensitive = caseMode === 'insensitive' || (caseMode === 'smart' && pattern === pattern.toLowerCase())
+    const literal = pattern.replace(/[\\*?\[\]]/g, '\\$&')
+    const excluded = WALK_EXCLUDES.map(dir => `-name ${shq(dir)}`).join(' -o ')
+    // GNU find/head are available on the supported Ubuntu hosts. Do not split
+    // on newlines: they are legal in POSIX filenames.
+    const command = `find ${shq(root)} \\( -type d \\( ${excluded} \\) -prune \\) -o \\( -type f ${insensitive ? '-iname' : '-name'} ${shq(`*${literal}*`)} -print0 \\) | head -z -n ${maxHits + 1}`
+    const started = Date.now()
+    const { stdout, stderr, code } = await this.pool.exec(host, command, { timeoutMs, maxBytes: 8 * 1024 * 1024 })
+    if (code !== 0 || stderr.trim() !== '') throw new RemoteError('search-failed', stderr.trim().split('\n')[0] || '文件名搜索失败', 502)
+    const paths = stdout.split('\0').filter(Boolean)
+    return {
+      mode: 'name', engine: 'find', root, query: pattern,
+      hits: paths.slice(0, maxHits).map(path => ({ path: resolvePath(path, root), text: path.slice(path.lastIndexOf('/') + 1) })),
+      files: Math.min(paths.length, maxHits), truncated: paths.length > maxHits, skipped: 0, durationMs: Date.now() - started,
+    }
+  }
+
   /**
    * Which engine this host has. `rg` when available (it respects ignore files
    * and is fast), `grep` otherwise, and an explicit error when neither exists —

@@ -123,11 +123,12 @@ assert.match(connecting, /建立 SSH 通道/, 'the handshake names what it is do
 const files = render('files')
 assert.match(files, /rs-bar/, 'files pane renders its toolbar')
 assert.match(files, /rs-tree/, 'files pane renders its tree')
-assert.match(files, /在远端搜索内容/, 'files pane offers remote content search')
+assert.match(files, /搜索文件/, 'files pane offers filename search')
 
 const terminal = render('terminal')
 assert.match(terminal, /rs-ttabs/, 'terminal pane renders its tab strip')
 assert.match(terminal, /rs-term-status/, 'terminal pane reports the session')
+assert.doesNotMatch(terminal, /⌘/, 'terminal buttons have no fixed macOS shortcut badges')
 
 const sync = render('sync', { snapshot: { mappings: [], queue: [], conflicts: [], stats: {} } })
 assert.match(sync, /还没有路径映射/, 'sync pane empty state')

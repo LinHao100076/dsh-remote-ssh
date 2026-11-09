@@ -37,6 +37,17 @@ const rgProbe = { stdout: '/usr/bin/rg\n', stderr: '', code: 0 }
 const grepProbe = { stdout: '/usr/bin/grep\n', stderr: '', code: 0 }
 const noneProbe = { stdout: '', stderr: '', code: 1 }
 
+/* Filename results are distinct from content hits; no content-engine probe. */
+{
+  const pool = scriptedPool([{ stdout: '/r/needle.txt\0/r/deep/needle:two.txt\0', stderr: '', code: 0 }])
+  const result = await new RemoteSearch(pool).names({ id: 'h1' }, { root: '/r', query: 'needle', limit: 1 })
+  assert.deepEqual(result.hits, [{ path: '/r/needle.txt', text: 'needle.txt' }])
+  assert.equal(result.truncated, true)
+  assert.match(pool.calls[0].command, /^find /)
+  assert.match(pool.calls[0].command, /-iname/)
+  assert.doesNotMatch(pool.calls[0].command, /grep|--json/)
+}
+
 /* ── engine detection ─────────────────────────────────────────────────── */
 
 {
@@ -255,6 +266,23 @@ if (hasShell) {
     assert.equal(hit.line, 2)
     assert.equal(hit.text, 'const needle = 1')
     assert.equal(hit.column, 7, 'grep has no column, so a literal query is located again')
+
+    // Match names even when their contents do not contain the query; conversely,
+    // content matches in a.ts must not leak into filename results.
+    writeFileSync(join(root, 'src', 'needle-name.txt'), 'unrelated text')
+    writeFileSync(join(root, 'src', 'NEEDLE-upper.txt'), 'unrelated text')
+    const named = await search.names({ id: 'h1' }, { root: posixRoot, query: 'needle' })
+    assert.equal(named.hits.length, 2)
+    assert(named.hits.every(hit => /needle/i.test(hit.text)))
+    assert(!named.hits.some(hit => hit.path.endsWith('/a.ts')))
+    const sensitive = await search.names({ id: 'h1' }, { root: posixRoot, query: 'needle', case: 'sensitive' })
+    assert.equal(sensitive.hits.length, 1)
+    const quoted = await search.names({ id: 'h1' }, { root: posixRoot, query: "it's" })
+    assert.equal(quoted.hits.length, 1)
+    writeFileSync(join(root, 'src', 'file[1].txt'), 'unrelated')
+    const literalName = await search.names({ id: 'h1' }, { root: posixRoot, query: '[1]' })
+    assert.equal(literalName.hits.length, 1)
+    assert(literalName.hits[0].path.endsWith('/file[1].txt'))
 
     /* fixed-strings by default: `.` must not behave as "any character" */
     const literal = await search.search({ id: 'h1' }, { root: posixRoot, query: 'a.ts' })

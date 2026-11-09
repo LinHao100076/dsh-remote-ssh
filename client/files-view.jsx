@@ -35,6 +35,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
   const location = useRef({ hostId, path })
   location.current = { hostId, path }
   const [searchOpen, setSearchOpen] = useState(false)
+  const [searchMode, setSearchMode] = useState('name')
   const [query, setQuery] = useState('')
   const [caseSensitive, setCaseSensitive] = useState(false)
   const [regex, setRegex] = useState(false)
@@ -156,7 +157,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
   }
 
   /**
-   * Run one content search from the current directory.
+   * Search filenames by default, or contents when explicitly selected.
    *
    * The search runs on the remote (`rg`, or `grep` when ripgrep is absent), so
    * it covers files the browser has never listed — a repository's worth of
@@ -180,7 +181,8 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
         path,
         query: needle,
         case: caseSensitive ? 'sensitive' : 'smart',
-        regex,
+        mode: searchMode,
+        regex: searchMode === 'content' && regex,
         limit: 200,
       })
       if (searchSeq.current === seq) setFound(value)
@@ -192,7 +194,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
     } finally {
       if (searchSeq.current === seq) setSearching(false)
     }
-  }, [ctx, sessionId, hostId, path, caseSensitive, regex])
+  }, [ctx, sessionId, hostId, path, caseSensitive, regex, searchMode])
 
   /* Debounced live search; Enter runs it immediately. */
   useEffect(() => {
@@ -471,7 +473,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
     ? '搜索中…'
     : found === undefined
       ? ''
-      : `${found.hits.length} 处 · ${found.files} 个文件 · ${found.engine} · ${found.durationMs}ms${found.truncated ? '（已截断）' : ''}`
+      : `${searchMode === 'name' ? found.files + ' 个文件' : found.hits.length + ' 处 · ' + found.files + ' 个文件'} · ${found.engine} · ${found.durationMs}ms${found.truncated ? '（已截断）' : ''}`
 
   const searchPane = (
     <div className="rs-search">
@@ -481,7 +483,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
           className="rs-sinput"
           autoFocus
           spellCheck={false}
-          placeholder={`在 ${shortName(path) === '' ? path : shortName(path)} 下搜索…`}
+          placeholder={`在 ${path} 下搜索${searchMode === 'name' ? '文件名' : '文件内容'}…`}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => { if (event.key === 'Enter') void runSearch(query) }}
@@ -499,6 +501,9 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
       </div>
 
       <div className="rs-sopts">
+        <label>搜索范围<select className="rs-select" aria-label="搜索范围" value={searchMode} onChange={event => setSearchMode(event.target.value)}>
+          <option value="name">文件名</option><option value="content">文件内容</option>
+        </select></label>
         <button
           type="button"
           className={caseSensitive ? 'rs-stog on' : 'rs-stog'}
@@ -510,7 +515,8 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
           type="button"
           className={regex ? 'rs-stog on' : 'rs-stog'}
           title="按正则表达式解释"
-          aria-pressed={regex}
+          disabled={searchMode !== 'content'}
+          aria-pressed={searchMode === 'content' && regex}
           onClick={() => setRegex((value) => !value)}
         >.*</button>
         <span className="rs-snum">{summary}</span>
@@ -526,7 +532,11 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
         {found !== undefined && hits.length === 0 && searching !== true
           ? <div className="rs-hint">没有匹配</div>
           : null}
-        {groups.map((group) => (
+        {searchMode === 'name' ? hits.map(hit => (
+          <div key={hit.path} className="rs-shit" title={hit.path} onClick={() => void openFile(hit)}>
+            <Icon name="file" size={11} /><span className="rs-sht">{marked(shortName(hit.path))}</span>
+          </div>
+        )) : groups.map((group) => (
           <div className="rs-sgroup" key={group.path}>
             <div className="rs-sghead" title={group.path}>
               <Icon name="file" size={11} className="rs-fico" />
@@ -560,7 +570,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
         <IconButton name="refresh" title="刷新" onClick={() => { void refresh().catch(failure => setError(failure.message)) }} />
         <IconButton
           name="search"
-          title="在远端搜索内容"
+          title="搜索文件"
           active={searchOpen}
           onClick={() => setSearchOpen((value) => !value)}
         />
