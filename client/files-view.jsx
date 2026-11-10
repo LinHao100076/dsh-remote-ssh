@@ -13,7 +13,7 @@ import { createElement as h, Fragment, useCallback, useEffect, useRef, useState 
 import {
   api, dirnameRemote, formatBytes, joinRemote, readFileBase64, sinceLabel, useToast, usePolling,
 } from './state.js'
-import { Button, Icon, IconButton } from './ui.jsx'
+import { Button, Field, Icon, IconButton, Input, Seg } from './ui.jsx'
 
 /**
  * @param {object} props - `ctx`, `sessionId`, `hostId`, `host`, `hostInfo`.
@@ -306,7 +306,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
     }
   }
 
-  const downloadTo = (entry) => { setDownloadEntry(entry); setLocalPath(''); setError(undefined) }
+  const downloadTo = (entry) => { setFolder(undefined); setDownloadEntry(entry); setLocalPath(''); setError(undefined) }
   const download = () => {
     if (peek?.path !== undefined) downloadTo({ path: peek.path, name: peek.path.replace(/^.*\//, '') })
   }
@@ -501,9 +501,9 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
       </div>
 
       <div className="rs-sopts">
-        <label>搜索范围<select className="rs-select" aria-label="搜索范围" value={searchMode} onChange={event => setSearchMode(event.target.value)}>
-          <option value="name">文件名</option><option value="content">文件内容</option>
-        </select></label>
+        <div className="rs-search-mode" role="group" aria-label="搜索范围">
+          <Seg value={searchMode} onChange={setSearchMode} options={[{ value: 'name', label: '文件名' }, { value: 'content', label: '文件内容' }]} />
+        </div>
         <button
           type="button"
           className={caseSensitive ? 'rs-stog on' : 'rs-stog'}
@@ -565,7 +565,7 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
       <div className="rs-bar">
         {breadcrumb}
         <IconButton name="levelUp" title="上一级" onClick={() => navigate(dirnameRemote(path))} disabled={atRoot} />
-        <IconButton name="folderPlus" title="新建目录" onClick={() => { setFolder({ parent: path, name: '' }); setError(undefined) }} disabled={path === '' || busy !== ''} />
+        <IconButton name="folderPlus" title="新建目录" onClick={() => { setDownloadEntry(undefined); setFolder({ parent: path, name: '' }); setError(undefined) }} disabled={path === '' || busy !== ''} />
         <IconButton name="up" title="上传文件" onClick={() => fileInput.current?.click()} disabled={path === '' || busy !== ''} />
         <IconButton name="refresh" title="刷新" onClick={() => { void refresh().catch(failure => setError(failure.message)) }} />
         <IconButton
@@ -577,21 +577,33 @@ export function FilesPane({ ctx, sessionId, hostId, host, hostInfo, active = tru
         <input type="file" multiple ref={fileInput} style={{ display: 'none' }} onChange={upload} />
       </div>
 
-      <div className="rs-hint" style={{ padding: '4px 12px' }}>上传位置：{path || '正在读取…'} · 单击展开目录，双击进入目录</div>
-      {uploadProgress === '' ? null : <div className="rs-hint">{uploadProgress}<Button size="sm" disabled={uploadJob.current?.committing === true} onClick={() => { if (uploadJob.current) uploadJob.current.cancelled = true }}>取消上传</Button></div>}
-      {folder === undefined ? null : <form className="rs-card" style={{ margin: '8px 12px', padding: '10px' }} onSubmit={event => { event.preventDefault(); void newFolder() }}>
-        <div className="rs-muted">新建于：{folder.parent}</div>
-        <label>目录名称<input className="rs-input" autoFocus value={folder.name} onChange={event => setFolder({ ...folder, name: event.target.value })} /></label>
-        <Button type="submit" size="sm" disabled={busy === 'mkdir'}>创建目录</Button>
-        <Button size="sm" onClick={() => setFolder(undefined)} disabled={busy === 'mkdir'}>取消创建</Button>
+      <div className="rs-file-location" title={`${path}\n单击展开目录，双击进入；上传到当前目录`}>
+        <Icon name="folder" size={11} /><span>上传位置：</span><span className="rs-file-location-path">{path || '正在读取…'}</span>
+      </div>
+      {uploadProgress === '' ? null : <div className="rs-file-progress"><span className="rs-qname" title={uploadProgress}>{uploadProgress}</span><Button size="sm" variant="ghost" disabled={uploadJob.current?.committing === true} onClick={() => { if (uploadJob.current) uploadJob.current.cancelled = true }}>取消上传</Button></div>}
+      {folder === undefined ? null : <form className="rs-card rs-file-action" onSubmit={event => { event.preventDefault(); void newFolder() }}>
+        <div className="rs-card-h"><Icon name="folderPlus" size={12} /><b>新建目录</b></div>
+        <div className="rs-card-b">
+          <div className="rs-file-location-path rs-muted" title={folder.parent}>位置：{folder.parent}</div>
+          <Field label="目录名称"><Input ariaLabel="目录名称" autoFocus value={folder.name} onChange={name => setFolder({ ...folder, name })} placeholder="输入目录名称" /></Field>
+          <div className="rs-rowacts">
+            <Button type="submit" variant="primary" size="sm" disabled={busy === 'mkdir'}>创建目录</Button>
+            <Button size="sm" variant="ghost" onClick={() => setFolder(undefined)} disabled={busy === 'mkdir'}>取消创建</Button>
+          </div>
+        </div>
       </form>}
-      {downloadEntry === undefined ? null : <form className="rs-card" style={{ margin: '8px 12px', padding: '10px' }} onSubmit={event => { event.preventDefault(); void downloadCustom() }}>
-        <div className="rs-muted">下载：{downloadEntry.path}</div>
-        <label>本地保存路径（含文件名）<input className="rs-input" autoFocus placeholder="C:/Downloads/file.txt 或 /home/user/Downloads/file.txt" value={localPath} onChange={event => setLocalPath(event.target.value)} /></label>
-        <div className="rs-muted">保存到运行 DSH 的电脑。填写完整绝对路径，无需建立映射。</div>
-        <Button type="submit" size="sm" disabled={busy === 'download' || localPath.trim() === ''}>保存到本地</Button>
-        <Button size="sm" disabled={busy === 'download'} onClick={() => { void downloadMapped(downloadEntry) }}>下载到映射目录</Button>
-        <Button size="sm" disabled={busy === 'download'} onClick={() => setDownloadEntry(undefined)}>取消下载</Button>
+      {downloadEntry === undefined ? null : <form className="rs-card rs-file-action" onSubmit={event => { event.preventDefault(); void downloadCustom() }}>
+        <div className="rs-card-h"><Icon name="down" size={12} /><b>下载文件</b></div>
+        <div className="rs-card-b">
+          <div className="rs-file-location-path rs-muted" title={downloadEntry.path}>文件：{downloadEntry.path}</div>
+          <Field label="本地保存路径（含文件名）"><Input ariaLabel="本地保存路径（含文件名）" autoFocus placeholder="输入完整的本地文件路径" value={localPath} onChange={setLocalPath} /></Field>
+          <div className="rs-muted">保存到运行 DSH 的电脑，无需建立映射。</div>
+          <div className="rs-rowacts">
+            <Button type="submit" variant="primary" size="sm" disabled={busy === 'download' || localPath.trim() === ''}>保存到本地</Button>
+            <Button size="sm" disabled={busy === 'download'} onClick={() => { void downloadMapped(downloadEntry) }}>下载到映射目录</Button>
+            <Button size="sm" variant="ghost" disabled={busy === 'download'} onClick={() => setDownloadEntry(undefined)}>取消下载</Button>
+          </div>
+        </div>
       </form>}
 
       {error !== undefined ? <div className="rs-err-box" style={{ margin: '8px 12px 0' }}><div className="rs-t"><Icon name="warn" size={12} />操作失败</div><code>{error}</code></div> : null}

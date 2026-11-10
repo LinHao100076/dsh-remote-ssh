@@ -203,6 +203,15 @@ export const CSS = `
 
 /* ── files ──────────────────────────────────────────────────────────── */
 .rs-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--rs-line); flex: none; }
+.rs-file-location, .rs-file-progress {
+  display: flex; align-items: center; gap: 6px; padding: 5px 12px; flex: none;
+  border-bottom: 1px solid var(--rs-line); color: var(--rs-fg3); font-size: 10.5px;
+}
+.rs-file-location > :not(.rs-file-location-path) { flex: none; }
+.rs-file-location-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-file-location .rs-file-location-path { font-family: var(--rs-mono); }
+.rs-file-action { margin: 8px 12px 0; flex: none; max-height: 60%; overflow: auto; }
+.rs-inline-form { display: grid; gap: 9px; padding-top: 9px; border-top: 1px solid var(--rs-line); }
 .rs-crumb {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 1px;
   font-family: var(--rs-mono); font-size: 11.5px; color: var(--rs-fg2); overflow: hidden;
@@ -302,6 +311,7 @@ export const CSS = `
 .rs-sx:hover { background: var(--rs-hover); color: var(--rs-fg); }
 
 .rs-sopts { display: flex; align-items: center; gap: 5px; padding: 7px 12px 5px; flex: none; }
+.rs-search-mode { width: 128px; flex: none; }
 .rs-stog {
   height: 20px; min-width: 22px; padding: 0 5px; border-radius: 5px; border: 1px solid var(--rs-line2);
   background: var(--rs-bg); color: var(--rs-fg3); font: 10.5px var(--rs-mono); flex: none;

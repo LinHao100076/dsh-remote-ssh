@@ -36,6 +36,23 @@ async (page) => {
     for (let i = 0; i < 100; i++) { if (await test()) return; await new Promise(r => setTimeout(r, 50)) }
     throw new Error(message)
   }
+  const checkPanelLayout = async name => {
+    for (const width of [320, 424]) {
+      await page.evaluate(width => { document.getElementById('app').style.width = width + 'px' }, width)
+      for (const theme of ['light', 'dark']) {
+        await page.evaluate(theme => { document.documentElement.style.colorScheme = theme }, theme)
+        const overflow = await page.locator('.rs-root').evaluate(root => {
+          const bounds = root.getBoundingClientRect()
+          return [...root.querySelectorAll('.rs-file-action, .rs-inline-form, .rs-sopts, .rs-file-location, .rs-rowacts button, .rs-field input')]
+            .filter(node => node.getClientRects().length > 0)
+            .some(node => { const rect = node.getBoundingClientRect(); return rect.right > bounds.right + 1 || rect.left < bounds.left - 1 })
+        })
+        assert(!overflow, `${name}: controls overflow at ${width}px/${theme}`)
+        await page.locator('.rs-root').screenshot({ path: `test-results/ui-consistency/${name}-${width}-${theme}.png` })
+      }
+    }
+    await page.evaluate(() => { document.getElementById('app').style.width = '424px'; document.documentElement.style.colorScheme = 'light' })
+  }
   const count = (method) => calls.filter(c => c.method === method).length
   const last = (method) => calls.filter(c => c.method === method).at(-1)?.payload
   page.on('pageerror', e => errors.push(e.message))
@@ -200,6 +217,7 @@ async (page) => {
   await page.getByTitle('上一级', { exact: true }).click()
   checked.push('目录双击进入、上传目标位置')
   await page.getByTitle('新建目录', { exact: true }).click()
+  await checkPanelLayout('new-folder')
   await page.getByLabel('目录名称', { exact: true }).fill('new-folder')
   await click('创建目录')
   await page.locator('.rs-row').filter({ hasText: /^new-folder/ }).waitFor()
@@ -300,6 +318,7 @@ async (page) => {
   failPush = false
   await page.evaluate(() => { window.__promptAnswer = 'main.js' })
   await click('下载单个')
+  await checkPanelLayout('mapping-download')
   await page.getByLabel('映射内相对路径', { exact: true }).fill('main.js')
   await click('确认下载')
   await wait(() => count('sync.pull') > 0, 'pull not called')
@@ -317,6 +336,7 @@ async (page) => {
   checked.push('同步后返回文件页刷新、展开子目录自动刷新')
   await page.locator('.rs-row').filter({ hasText: 'main.js' }).click()
   await click('下载')
+  await checkPanelLayout('file-download')
   await click('下载到映射目录')
   await wait(() => count('sync.pull') === 2, 'file download must use bounded mapping API')
   assert(last('sync.pull').rel === 'main.js', 'wrong relative download path')
@@ -337,6 +357,7 @@ async (page) => {
   await page.locator('.rs-crumb button').first().click()
   checked.push('文件下载、上一级、面包屑')
   await page.getByTitle('搜索文件').click()
+  await checkPanelLayout('search')
   await page.locator('.rs-sinput').fill('main.js')
   await page.locator('.rs-shit').waitFor()
   assert(last('fs.search').mode === 'name', 'default search must match filenames')
@@ -345,7 +366,7 @@ async (page) => {
   assert(await page.locator('.rs-peek .rs-badge').filter({ hasText: '第 1 行' }).count() === 0, 'filename result must not invent a content line')
   await page.locator('.rs-sinput').fill('hello-only-in-content')
   await page.getByText('没有匹配', { exact: true }).waitFor()
-  await page.getByLabel('搜索范围', { exact: true }).selectOption('content')
+  await page.getByRole('group', { name: '搜索范围', exact: true }).getByRole('button', { name: '文件内容', exact: true }).click()
   await page.locator('.rs-sinput').fill('hello')
   await page.locator('.rs-shit').waitFor()
   await page.getByTitle('区分大小写', { exact: true }).click()

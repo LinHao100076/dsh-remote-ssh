@@ -84,9 +84,10 @@ export function Field({ label, children }) {
 }
 
 /** Text input bound to a value/setter pair. */
-export function Input({ value, onChange, placeholder, type = 'text', disabled, autoFocus, onKeyDown }) {
+export function Input({ value, onChange, placeholder, type = 'text', disabled, autoFocus, onKeyDown, ariaLabel }) {
   return h('input', {
     className: 'rs-input',
+    'aria-label': ariaLabel,
     value: value ?? '',
     type,
     placeholder,

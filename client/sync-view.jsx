@@ -75,10 +75,12 @@ function MappingCard({ mapping, host, status, busy, onPatch, onPush, onPull, onR
           <span style={{ flex: 1 }} />
           {mapping.pending > 0 ? <span className="rs-badge warn">{mapping.pending} 待上传</span> : null}
         </div>
-        {pullOpen ? <form onSubmit={event => { event.preventDefault(); if (pullRel.trim() !== '') onPull(pullRel.trim()) }}>
-          <label>映射内相对路径<input className="rs-input" placeholder="src/app/main.ts" value={pullRel} onChange={event => setPullRel(event.target.value)} /></label>
-          <Button type="submit" size="sm" disabled={busy || pullRel.trim() === ''}>确认下载</Button>
-          <Button size="sm" onClick={() => setPullOpen(false)}>取消下载</Button>
+        {pullOpen ? <form className="rs-inline-form" onSubmit={event => { event.preventDefault(); if (pullRel.trim() !== '') onPull(pullRel.trim()) }}>
+          <Field label="映射内相对路径"><Input ariaLabel="映射内相对路径" placeholder="src/app/main.ts" value={pullRel} onChange={setPullRel} /></Field>
+          <div className="rs-rowacts">
+            <Button type="submit" variant="primary" size="sm" disabled={busy || pullRel.trim() === ''}>确认下载</Button>
+            <Button size="sm" variant="ghost" onClick={() => setPullOpen(false)}>取消下载</Button>
+          </div>
         </form> : null}
       </div>
     </div>
